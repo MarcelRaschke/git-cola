@@ -7,7 +7,7 @@ to this software.
 
 ## Run the pre-commit checks before committing
 
-* `make check`
+* `garden check`
 
 ## Write tests
 
@@ -20,15 +20,15 @@ Find an appropriate test suite and extend it whenever possible.
 This project is very picky about code style.
 The style here is the standard Python PEP-8 style:
 
-http://www.python.org/dev/peps/pep-0008/
+https://www.python.org/dev/peps/pep-0008/
 
-* Use the `make format` command to format the source code using `black`.
+* Use the `garden fmt` command to format the source code using `cercis`.
 
 * Follow the same style as the existing code.
 
 * Use 4-space indents.
 
-* Use `variable_names_with_underscores`, AKA "snake case" naming.
+* Use `variable_names_with_underscores` AKA "snake case" naming.
   No camelCase.  The only exception is when overriding Qt functions.
 
 * Do not introduce trailing whitespace.  The "Diff" viewer displays
@@ -36,7 +36,8 @@ http://www.python.org/dev/peps/pep-0008/
 
 * If you use SublimeText, configure `newline_at_eof_on_save` to true.
 
-https://robots.thoughtbot.com/no-newline-at-end-of-file
+* Avoid "No newline at end of file"
+  [in your diffs](https://robots.thoughtbot.com/no-newline-at-end-of-file).
 
 ## Describe your changes well.
 
@@ -55,11 +56,11 @@ files you are modifying to see the current conventions.
 
 The body should provide a meaningful commit message, which:
 
-* explains the problem the change tries to solve, iow, what is wrong
-  with the current code without the change.
+* explains the problem the change tries to solve, in other words,
+  what is wrong with the current code without the change.
 
-* justifies the way the change solves the problem, iow, why the
-  result with the change is better.
+* justifies the way the change solves the problem, in other words,
+  why the result with the change is better.
 
 * alternate solutions considered but discarded, if any.
 
@@ -151,12 +152,14 @@ for some general tips on bug reporting.
 
 ## Internationalization and Localization
 
-git-cola is translated to several languages.  When strings are presented to
+Git Cola is translated to several languages.  When strings are presented to
 the user they must use the `N_('<string>')` function so that `<string>` is
 translated into a localized string.
 
 The translation message files are the `*.po` files in the `cola/i18n/` directory.
 Adding a new translation entails creating a new language-specific `.po` file.
+
+Please note - it is preferred that git command jargon will be left untranslated.
 
 When new (untranslated) strings are added to the project, the `git-cola.pot`
 base template and the language-specific message files need to be updated with
@@ -164,7 +167,7 @@ the new strings.
 
 To regenerate `git-cola.pot` and update `.po` files with new strings run:
 
-    make pot
+    garden pot
 
 This will update `.po` files with untranslated strings which translators can
 use to translate `git-cola`.

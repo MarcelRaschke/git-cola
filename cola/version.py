@@ -1,7 +1,6 @@
 """Provide git-cola's version number"""
-from __future__ import absolute_import, division, print_function, unicode_literals
-import os
 import sys
+
 try:
     if sys.version_info < (3, 8):
         import importlib_metadata as metadata
@@ -10,14 +9,15 @@ try:
 except (ImportError, OSError):
     metadata = None
 
+from .git import STDOUT
+from .decorators import memoize
+from ._version import VERSION
 
-if __name__ == '__main__':
-    srcdir = os.path.dirname(os.path.dirname(__file__))
-    sys.path.insert(1, srcdir)
+try:
+    from ._scm_version import __version__ as SCM_VERSION
+except ImportError:
+    SCM_VERSION = None
 
-from .git import STDOUT  # noqa
-from .decorators import memoize  # noqa
-from ._version import VERSION  # noqa
 
 # minimum version requirements
 _versions = {
@@ -38,12 +38,20 @@ _versions = {
     'force-with-lease': '1.8.5',
     # git submodule update --recursive was introduced in 1.6.5
     'submodule-update-recursive': '1.6.5',
-    # git include.path pseudo-variable was introduced in 1.7.10
+    # git include.path pseudo-variable was introduced in 1.7.10.
     'config-includes': '1.7.10',
+    # git config --show-scope was introduced in 2.26.0
+    'config-show-scope': '2.26.0',
+    # git config --show-origin was introduced in 2.8.0
+    'config-show-origin': '2.8.0',
     # git for-each-ref --sort=version:refname
     'version-sort': '2.7.0',
     # Qt support for QT_AUTO_SCREEN_SCALE_FACTOR and QT_SCALE_FACTOR
     'qt-hidpi-scale': '5.6.0',
+    # git rebase --rebase-merges was added in 2.18.0
+    'rebase-merges': '2.18.0',
+    # git rebase --update-refs was added in 2.38.0
+    'rebase-update-refs': '2.38.0',
     # git rev-parse --show-superproject-working-tree was added in 2.13.0
     'show-superproject-working-tree': '2.13.0',
 }
@@ -56,13 +64,28 @@ def get(key):
 
 def version():
     """Returns the current version"""
+    if SCM_VERSION:
+        return SCM_VERSION
+
     pkg_version = VERSION
-    if metadata is not None:
-        try:
-            pkg_version = metadata.version('git-cola')
-        except (ImportError, OSError):
-            pass
+    if metadata is None:
+        return pkg_version
+
+    try:
+        metadata_version = metadata.version('git-cola')
+    except (ImportError, OSError):
+        return pkg_version
+
+    # Building from a tarball can end up reporting "0.0.0" or "0.1.dev*".
+    # Use the fallback version in these scenarios.
+    if not metadata_version.startswith('0.'):
+        return metadata_version
     return pkg_version
+
+
+def builtin_version():
+    """Returns the version recorded in cola/_version.py"""
+    return VERSION
 
 
 @memoize
@@ -87,12 +110,12 @@ def check_git(context, key):
 def version_to_list(value):
     """Convert a version string to a list of numbers or strings"""
     ver_list = []
-    for p in value.split('.'):
+    for part in value.split('.'):
         try:
-            n = int(p)
+            number = int(part)
         except ValueError:
-            n = p
-        ver_list.append(n)
+            number = part
+        ver_list.append(number)
     return ver_list
 
 
@@ -100,7 +123,7 @@ def version_to_list(value):
 def git_version_str(context):
     """Returns the current GIT version"""
     git = context.git
-    return git.version()[STDOUT].strip()
+    return git.version(_readonly=True)[STDOUT].strip()
 
 
 @memoize
@@ -111,18 +134,24 @@ def git_version(context):
         result = parts[2]
     else:
         # minimum supported version
-        result = '1.6.3'
+        result = get('git')
     return result
 
 
-def cola_version():
-    suffix = version()
+def cola_version(builtin=False):
+    """A version string for consumption by humans"""
+    if builtin:
+        suffix = builtin_version()
+    else:
+        suffix = version()
     return 'cola version %s' % suffix
 
 
-def print_version(brief=False):
-    if brief:
+def print_version(builtin=False, brief=False):
+    if builtin and brief:
+        msg = builtin_version()
+    elif brief:
         msg = version()
     else:
-        msg = cola_version()
-    sys.stdout.write('%s\n' % msg)
+        msg = cola_version(builtin=builtin)
+    print(msg)

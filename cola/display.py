@@ -1,6 +1,16 @@
 """Display models and utility functions"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import collections
+
+try:
+    import notify2
+except ImportError:
+    notify2 = None
+try:
+    import notifypy
+except ImportError:
+    notifypy = None
+
+from . import interaction
 
 
 def shorten_paths(source_paths):
@@ -52,3 +62,20 @@ def path_suffix(path, count):
 def normalize_path(path):
     """Normalize a path so that only "/" is used as a separator"""
     return path.replace('\\', '/')
+
+
+def notify(app_name, title, message, icon):
+    """Send a notification using notify2 xor notifypy"""
+    if notify2:
+        notify2.init(app_name)
+        notification = notify2.Notification(title, message, icon)
+        notification.show()
+    elif notifypy:
+        notification = notifypy.Notify()
+        notification.application_name = app_name
+        notification.title = title
+        notification.message = message
+        notification.icon = icon
+        notification.send()
+    else:
+        interaction.Interaction.log(f'{title}: {message}')

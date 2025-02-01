@@ -1,8 +1,7 @@
 """Base Command class"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 
-class Command(object):
+class Command:
     """Mixin interface for commands"""
 
     UNDOABLE = False
@@ -17,12 +16,10 @@ class Command(object):
         """Can this be undone?"""
         return cls.UNDOABLE
 
-    # pylint: disable=no-self-use
     def do(self):
         """Execute the command"""
         return
 
-    # pylint: disable=no-self-use
     def undo(self):
         """Undo the command"""
         return

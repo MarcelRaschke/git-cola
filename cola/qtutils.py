@@ -1,5 +1,4 @@
 """Miscellaneous Qt utility functions."""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 
 from qtpy import compat
@@ -29,31 +28,38 @@ def active_window():
     return QtWidgets.QApplication.activeWindow()
 
 
-def connect_action(action, fn):
+def current_palette():
+    """Return the QPalette for the current application"""
+    return QtWidgets.QApplication.instance().palette()
+
+
+def connect_action(action, func):
     """Connect an action to a function"""
-    action.triggered[bool].connect(lambda x: fn())
+    action.triggered[bool].connect(lambda x: func(), type=Qt.QueuedConnection)
 
 
-def connect_action_bool(action, fn):
+def connect_action_bool(action, func):
     """Connect a triggered(bool) action to a function"""
-    action.triggered[bool].connect(fn)
+    action.triggered[bool].connect(func, type=Qt.QueuedConnection)
 
 
-def connect_button(button, fn):
+def connect_button(button, func):
     """Connect a button to a function"""
     # Some versions of Qt send the `bool` argument to the clicked callback,
     # and some do not.  The lambda consumes all callback-provided arguments.
-    button.clicked.connect(lambda *args, **kwargs: fn())
+    button.clicked.connect(lambda *args, **kwargs: func(), type=Qt.QueuedConnection)
 
 
-def connect_checkbox(widget, fn):
+def connect_checkbox(widget, func):
     """Connect a checkbox to a function taking bool"""
-    widget.clicked.connect(lambda *args, **kwargs: fn(get(checkbox)))
+    widget.clicked.connect(
+        lambda *args, **kwargs: func(get(checkbox)), type=Qt.QueuedConnection
+    )
 
 
-def connect_released(button, fn):
+def connect_released(button, func):
     """Connect a button to a function"""
-    button.released.connect(fn)
+    button.released.connect(func, type=Qt.QueuedConnection)
 
 
 def button_action(button, action):
@@ -61,9 +67,9 @@ def button_action(button, action):
     connect_button(button, action.trigger)
 
 
-def connect_toggle(toggle, fn):
+def connect_toggle(toggle, func):
     """Connect a toggle button to a function"""
-    toggle.toggled.connect(fn)
+    toggle.toggled.connect(func, type=Qt.QueuedConnection)
 
 
 def disconnect(signal):
@@ -74,7 +80,7 @@ def disconnect(signal):
         pass
 
 
-def get(widget):
+def get(widget, default=None):
     """Query a widget for its python value"""
     if hasattr(widget, 'isChecked'):
         value = widget.isChecked()
@@ -89,7 +95,7 @@ def get(widget):
     elif hasattr(widget, 'date'):
         value = widget.date().toString(Qt.ISODate)
     else:
-        value = None
+        value = default
     return value
 
 
@@ -181,7 +187,7 @@ def grid(margin, spacing, *widgets):
 
 
 def splitter(orientation, *widgets):
-    """Create a spliter over the specified widgets
+    """Create a splitter over the specified widgets
 
     :param orientation: Qt.Horizontal or Qt.Vertical
 
@@ -218,10 +224,10 @@ def label(text=None, align=None, fmt=None, selectable=True):
 
 
 class ComboBox(QtWidgets.QComboBox):
-    """Custom read-only combobox with a convenient API"""
+    """Custom read-only combo box with a convenient API"""
 
     def __init__(self, items=None, editable=False, parent=None, transform=None):
-        super(ComboBox, self).__init__(parent)
+        super().__init__(parent)
         self.setEditable(editable)
         self.transform = transform
         self.item_data = []
@@ -250,15 +256,18 @@ class ComboBox(QtWidgets.QComboBox):
         self.setCurrentIndex(index)
 
 
-def combo(items, editable=False, parent=None):
-    """Create a readonly (by default) combobox from a list of items"""
-    return ComboBox(editable=editable, items=items, parent=parent)
+def combo(items, editable=False, tooltip='', parent=None):
+    """Create a readonly (by default) combo box from a list of items"""
+    combobox = ComboBox(editable=editable, items=items, parent=parent)
+    if tooltip:
+        combobox.setToolTip(tooltip)
+    return combobox
 
 
 def combo_mapped(data, editable=False, transform=None, parent=None):
-    """Create a readonly (by default) combobox from a list of items"""
+    """Create a readonly (by default) combo box from a list of items"""
     widget = ComboBox(editable=editable, transform=transform, parent=parent)
-    for (k, v) in data:
+    for k, v in data:
         widget.add_item(k, v)
     return widget
 
@@ -270,6 +279,25 @@ def textbrowser(text=None):
     if text:
         widget.setText(text)
     return widget
+
+
+def link(url, text, palette=None):
+    if palette is None:
+        palette = QtGui.QPalette()
+
+    color = palette.color(QtGui.QPalette.WindowText)
+    rgb_color = f'rgb({color.red()}, {color.green()}, {color.blue()})'
+    scope = {'rgb': rgb_color, 'text': text, 'url': url}
+
+    return (
+        """
+        <a style="font-style: italic; text-decoration: none; color: %(rgb)s;"
+            href="%(url)s">
+            %(text)s
+        </a>
+    """
+        % scope
+    )
 
 
 def add_completer(widget, items):
@@ -303,10 +331,7 @@ def prompt_n(msg, inputs):
         if len(k + v) > len(long_value):
             long_value = k + v
 
-    metrics = QtGui.QFontMetrics(dialog.font())
-    min_width = metrics.width(long_value) + 100
-    if min_width > 720:
-        min_width = 720
+    min_width = min(720, text_width(dialog.font(), long_value) + 100)
     dialog.setMinimumWidth(min_width)
 
     ok_b = ok_button(msg, enabled=False)
@@ -320,8 +345,9 @@ def prompt_n(msg, inputs):
     for name, value in inputs:
         lineedit = QtWidgets.QLineEdit()
         # Enable the OK button only when all fields have been populated
-        # pylint: disable=no-member
-        lineedit.textChanged.connect(lambda x: ok_b.setEnabled(all(get_values())))
+        lineedit.textChanged.connect(
+            lambda x: ok_b.setEnabled(all(get_values())), type=Qt.QueuedConnection
+        )
         if value:
             lineedit.setText(value)
         form_widgets.append((name, lineedit))
@@ -338,13 +364,35 @@ def prompt_n(msg, inputs):
 
     accepted = dialog.exec_() == QtWidgets.QDialog.Accepted
     text = get_values()
-    ok = accepted and all(text)
-    return (ok, text)
+    success = accepted and all(text)
+    return (success, text)
+
+
+def standard_item_type_value(value):
+    """Return a custom UserType for use in QTreeWidgetItem.type() overrides"""
+    return custom_item_type_value(QtGui.QStandardItem, value)
+
+
+def graphics_item_type_value(value):
+    """Return a custom UserType for use in QGraphicsItem.type() overrides"""
+    return custom_item_type_value(QtWidgets.QGraphicsItem, value)
+
+
+def custom_item_type_value(cls, value):
+    """Return a custom cls.UserType for use in cls.type() overrides"""
+    user_type = enum_value(cls.UserType)
+    return user_type + value
+
+
+def enum_value(value):
+    """Qt6 has enums with an inner '.value' attribute."""
+    if hasattr(value, 'value'):
+        value = value.value
+    return value
 
 
 class TreeWidgetItem(QtWidgets.QTreeWidgetItem):
-
-    TYPE = QtGui.QStandardItem.UserType + 101
+    TYPE = standard_item_type_value(101)
 
     def __init__(self, path, icon, deleted):
         QtWidgets.QTreeWidgetItem.__init__(self)
@@ -363,7 +411,7 @@ def paths_from_indexes(model, indexes, item_type=TreeWidgetItem.TYPE, item_filte
     return paths_from_items(items, item_type=item_type, item_filter=item_filter)
 
 
-def _true_filter(_x):
+def _true_filter(_value):
     return True
 
 
@@ -440,11 +488,20 @@ def open_files(title, directory=None, filters=''):
     return result[0]
 
 
+def _enum_value(value):
+    """Resolve Qt6 enum values"""
+    if hasattr(value, 'value'):
+        return value.value
+    return value
+
+
 def opendir_dialog(caption, path):
     """Prompts for a directory path"""
-
-    options = (
-        QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.DontResolveSymlinks
+    options = QtWidgets.QFileDialog.Option(
+        _enum_value(QtWidgets.QFileDialog.Directory)
+        | _enum_value(QtWidgets.QFileDialog.DontResolveSymlinks)
+        | _enum_value(QtWidgets.QFileDialog.ReadOnly)
+        | _enum_value(QtWidgets.QFileDialog.ShowDirsOnly)
     )
     return compat.getexistingdirectory(
         parent=active_window(), caption=caption, basedir=path, options=options
@@ -455,6 +512,14 @@ def save_as(filename, title='Save As...'):
     """Creates a Save File dialog and returns a filename."""
     result = compat.getsavefilename(
         parent=active_window(), caption=title, basedir=filename
+    )
+    return result[0]
+
+
+def existing_file(directory, title='Append...'):
+    """Creates a Save File dialog and returns a filename."""
+    result = compat.getopenfilename(
+        parent=active_window(), caption=title, basedir=directory
     )
     return result[0]
 
@@ -479,7 +544,6 @@ def set_clipboard(text):
     persist_clipboard()
 
 
-# pylint: disable=line-too-long
 def persist_clipboard():
     """Persist the clipboard
 
@@ -496,30 +560,47 @@ def persist_clipboard():
     QtWidgets.QApplication.sendEvent(clipboard, event)
 
 
-def add_action_bool(widget, text, fn, checked, *shortcuts):
+def add_action_bool(widget, text, func, checked, *shortcuts):
     tip = text
-    action = _add_action(widget, text, tip, fn, connect_action_bool, *shortcuts)
+    action = _add_action(widget, text, tip, func, connect_action_bool, *shortcuts)
     action.setCheckable(True)
     action.setChecked(checked)
     return action
 
 
-def add_action(widget, text, fn, *shortcuts):
+def add_action(widget, text, func, *shortcuts):
+    """Create a QAction and bind it to the `func` callback and hotkeys"""
     tip = text
-    return _add_action(widget, text, tip, fn, connect_action, *shortcuts)
+    return _add_action(widget, text, tip, func, connect_action, *shortcuts)
 
 
-def add_action_with_status_tip(widget, text, tip, fn, *shortcuts):
-    return _add_action(widget, text, tip, fn, connect_action, *shortcuts)
+def add_action_with_icon(widget, icon, text, func, *shortcuts):
+    """Create a QAction using a custom icon bound to the `func` callback and hotkeys"""
+    tip = text
+    action = _add_action(widget, text, tip, func, connect_action, *shortcuts)
+    action.setIcon(icon)
+    return action
 
 
-def _add_action(widget, text, tip, fn, connect, *shortcuts):
+def add_action_with_tooltip(widget, text, tip, func, *shortcuts):
+    """Create an action with a tooltip"""
+    return _add_action(widget, text, tip, func, connect_action, *shortcuts)
+
+
+def menu_separator(widget, text=''):
+    """Return a QAction whose isSeparator() returns true. Used in context menus"""
+    action = QtWidgets.QAction(text, widget)
+    action.setSeparator(True)
+    return action
+
+
+def _add_action(widget, text, tip, func, connect, *shortcuts):
     action = QtWidgets.QAction(text, widget)
     if hasattr(action, 'setIconVisibleInMenu'):
         action.setIconVisibleInMenu(True)
     if tip:
         action.setStatusTip(tip)
-    connect(action, fn)
+    connect(action, func)
     if shortcuts:
         action.setShortcuts(shortcuts)
         if hasattr(Qt, 'WidgetWithChildrenShortcut'):
@@ -529,7 +610,7 @@ def _add_action(widget, text, tip, fn, connect, *shortcuts):
 
 
 def set_selected_item(widget, idx):
-    """Sets a the currently selected item to the item at index idx."""
+    """Sets the currently selected item to the item at index idx."""
     if isinstance(widget, QtWidgets.QTreeWidget):
         item = widget.topLevelItem(idx)
         if item:
@@ -572,23 +653,17 @@ def app():
     return QtWidgets.QApplication.instance()
 
 
-def desktop():
-    """Return the desktop"""
-    return app().desktop()
-
-
 def desktop_size():
-    desk = desktop()
-    rect = desk.screenGeometry(QtGui.QCursor().pos())
+    rect = app().primaryScreen().geometry()
     return (rect.width(), rect.height())
 
 
 def center_on_screen(widget):
     """Move widget to the center of the default screen"""
     width, height = desktop_size()
-    cx = width // 2
-    cy = height // 2
-    widget.move(cx - widget.width() // 2, cy - widget.height() // 2)
+    center_x = width // 2
+    center_y = height // 2
+    widget.move(center_x - widget.width() // 2, center_y - widget.height() // 2)
 
 
 def default_size(parent, width, height, use_parent_height=True):
@@ -603,6 +678,8 @@ def default_size(parent, width, height, use_parent_height=True):
 def default_monospace_font():
     if utils.is_darwin():
         family = 'Monaco'
+    elif utils.is_win32():
+        family = 'Courier'
     else:
         family = 'Monospace'
     mfont = QtGui.QFont()
@@ -619,10 +696,10 @@ def diff_font_str(context):
 
 
 def diff_font(context):
-    return font(diff_font_str(context))
+    return font_from_string(diff_font_str(context))
 
 
-def font(string):
+def font_from_string(string):
     qfont = QtGui.QFont()
     qfont.fromString(string)
     return qfont
@@ -677,19 +754,24 @@ def tool_button():
             border: %(border)spx solid %(highlight_rgb)s;
         }
     """
-        % dict(border=defs.border, highlight_rgb=highlight_rgb)
+        % {
+            'border': defs.border,
+            'highlight_rgb': highlight_rgb,
+        }
     )
     return button
 
 
-def create_action_button(tooltip=None, icon=None):
-    """Create a small toolbutton for use in dock title widgets"""
+def create_action_button(tooltip=None, icon=None, visible=None):
+    """Create a small tool button for use in dock title widgets"""
     button = tool_button()
     if tooltip is not None:
         button.setToolTip(tooltip)
     if icon is not None:
         button.setIcon(icon)
         button.setIconSize(QtCore.QSize(defs.small_icon, defs.small_icon))
+    if visible is not None:
+        button.setVisible(visible)
     return button
 
 
@@ -740,14 +822,18 @@ def _checkbox(cls, text, tooltip, checked):
 
 
 class DockTitleBarWidget(QtWidgets.QFrame):
-    def __init__(self, parent, title, stretch=True):
+    """Provides a dockwidget titlebar that can be extended with custom widgets"""
+
+    def __init__(self, parent, title, stretch=True, hide_title=False):
         QtWidgets.QFrame.__init__(self, parent)
         self.setAutoFillBackground(True)
-        self.label = qlabel = QtWidgets.QLabel(title, self)
-        qfont = qlabel.font()
-        qfont.setBold(True)
-        qlabel.setFont(qfont)
-        qlabel.setCursor(Qt.OpenHandCursor)
+        self.label = QtWidgets.QLabel(title, self)
+        self.label.setCursor(Qt.OpenHandCursor)
+        font = self.label.font()
+        font.setPointSize(defs.action_text)
+        self.label.setFont(font)
+        if hide_title:
+            self.label.hide()
 
         self.close_button = create_action_button(
             tooltip=N_('Close'), icon=icons.close()
@@ -756,8 +842,10 @@ class DockTitleBarWidget(QtWidgets.QFrame):
         self.toggle_button = create_action_button(
             tooltip=N_('Detach'), icon=icons.external()
         )
+        self.toggle_button.hide()
 
         self.corner_layout = hbox(defs.no_margin, defs.spacing)
+        self.title_layout = hbox(defs.no_margin, defs.button_spacing, self.label)
 
         if stretch:
             separator = STRETCH
@@ -767,51 +855,68 @@ class DockTitleBarWidget(QtWidgets.QFrame):
         self.main_layout = hbox(
             defs.small_margin,
             defs.titlebar_spacing,
-            qlabel,
+            self.title_layout,
             separator,
             self.corner_layout,
             self.toggle_button,
             self.close_button,
         )
+        self.main_layout.setAlignment(self.toggle_button, Qt.AlignTop)
+        self.main_layout.setAlignment(self.close_button, Qt.AlignTop)
         self.setLayout(self.main_layout)
 
         connect_button(self.toggle_button, self.toggle_floating)
         connect_button(self.close_button, self.toggle_visibility)
 
     def toggle_floating(self):
+        """Toggle between floating and embedded modes"""
         self.parent().setFloating(not self.parent().isFloating())
-        self.update_tooltips()
 
     def toggle_visibility(self):
+        """Toggle visibility of the dock widget"""
         self.parent().toggleViewAction().trigger()
 
     def set_title(self, title):
+        """Set the title text"""
         self.label.setText(title)
 
+    def add_title_widget(self, widget):
+        """Add widgets to the title area"""
+        self.title_layout.addWidget(widget)
+
     def add_corner_widget(self, widget):
+        """Add widgets to the corner area"""
         self.corner_layout.addWidget(widget)
 
-    def update_tooltips(self):
-        if self.parent().isFloating():
+    def update_floating(self):
+        """Refresh the floating state"""
+        self.set_floating(self.parent().isFloating())
+
+    def set_floating(self, floating):
+        """Update state in response to floating state changes"""
+        if floating:
             tooltip = N_('Attach')
         else:
             tooltip = N_('Detach')
         self.toggle_button.setToolTip(tooltip)
+        self.toggle_button.setVisible(floating)
 
 
-def create_dock(name, title, parent, stretch=True, widget=None, fn=None):
+def create_dock(
+    name, title, parent, stretch=True, widget=None, func=None, hide_title=False
+):
     """Create a dock widget and set it up accordingly."""
     dock = QtWidgets.QDockWidget(parent)
     dock.setWindowTitle(title)
     dock.setObjectName(name)
-    titlebar = DockTitleBarWidget(dock, title, stretch=stretch)
+    titlebar = DockTitleBarWidget(dock, title, stretch=stretch, hide_title=hide_title)
     dock.setTitleBarWidget(titlebar)
     dock.setAutoFillBackground(True)
+    dock.topLevelChanged.connect(titlebar.set_floating)
     if hasattr(parent, 'dockwidgets'):
         parent.dockwidgets.append(dock)
-    if fn:
-        widget = fn(dock)
-        assert isinstance(widget, QtWidgets.QFrame), "Docked widget has to be a QFrame"
+    if func:
+        widget = func(dock)
     if widget:
         dock.setWidget(widget)
     return dock
@@ -829,11 +934,11 @@ def create_menu(title, parent):
 
 
 class DebouncingMenu(QtWidgets.QMenu):
-    """Menu that debounces mouse release action ie. stops it if occurred
+    """Menu that debounces mouse release action i.e. stops it if occurred
     right after menu creation.
 
     Disables annoying behaviour when RMB is pressed to show menu, cursor is
-    moved accidentally 1px onto newly created menu and released causing to
+    moved accidentally 1 px onto newly created menu and released causing to
     execute menu action
     """
 
@@ -861,7 +966,7 @@ def add_menu(title, parent):
     return menu
 
 
-def create_toolbutton(text=None, layout=None, tooltip=None, icon=None):
+def create_toolbutton(text=None, layout=None, tooltip=None, icon=None, repeat=False):
     button = tool_button()
     if icon is not None:
         button.setIcon(icon)
@@ -871,44 +976,73 @@ def create_toolbutton(text=None, layout=None, tooltip=None, icon=None):
         button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
     if tooltip is not None:
         button.setToolTip(tooltip)
+    if repeat:
+        button.setAutoRepeat(True)
     if layout is not None:
         layout.addWidget(button)
     return button
 
 
-# pylint: disable=line-too-long
-def mimedata_from_paths(context, paths):
-    """Return mimedata with a list of absolute path URLs
+def create_toolbutton_with_callback(
+    callback, text, icon, tooltip, layout=None, repeat=False
+):
+    """Create a tool button that runs the specified callback"""
+    toolbutton = create_toolbutton(
+        text=text, layout=layout, tooltip=tooltip, icon=icon, repeat=repeat
+    )
+    connect_button(toolbutton, callback)
+    return toolbutton
 
-    The text/x-moz-list format is always included by Qt, and doing
-    mimedata.removeFormat('text/x-moz-url') has no effect.
-    C.f. http://www.qtcentre.org/threads/44643-Dragging-text-uri-list-Qt-inserts-garbage
 
-    gnome-terminal expects utf-16 encoded text, but other terminals,
-    e.g. terminator, prefer utf-8, so allow cola.dragencoding
-    to override the default.
+def mimedata_from_paths(context, paths, include_urls=True):
+    """Return mime data with a list of absolute path URLs
 
+    Set `include_urls` to False to prevent URLs from being included
+    in the mime data. This is useful in some terminals that do not gracefully handle
+    multiple URLs being included in the payload.
+
+    This allows the mime data to contain just plain a plain text value that we
+    are able to format ourselves.
+
+    Older versions of gnome-terminal expected a UTF-16 encoding, but that
+    behavior is no longer needed.
     """  # noqa
-    cfg = context.cfg
     abspaths = [core.abspath(path) for path in paths]
-    urls = [QtCore.QUrl.fromLocalFile(path) for path in abspaths]
-
-    mimedata = QtCore.QMimeData()
-    mimedata.setUrls(urls)
-
     paths_text = core.list2cmdline(abspaths)
-    encoding = cfg.get('cola.dragencoding', 'utf-16')
-    moz_text = core.encode(paths_text, encoding=encoding)
-    mimedata.setData('text/x-moz-url', moz_text)
+
+    # The text/x-moz-list format is always included by Qt, and doing
+    # mimedata.removeFormat('text/x-moz-url') has no effect.
+    # http://www.qtcentre.org/threads/44643-Dragging-text-uri-list-Qt-inserts-garbage
+    #
+    # Older versions of gnome-terminal expect UTF-16 encoded text, but other terminals,
+    # e.g. terminator, expect UTF-8, so use cola.dragencoding to override the default.
+    # NOTE: text/x-moz-url does not seem to be used/needed by modern versions of
+    # gnome-terminal, kitty, and terminator.
+    mimedata = QtCore.QMimeData()
+    mimedata.setText(paths_text)
+    if include_urls:
+        urls = [QtCore.QUrl.fromLocalFile(path) for path in abspaths]
+        encoding = context.cfg.get('cola.dragencoding', 'utf-16')
+        encoded_text = core.encode(paths_text, encoding=encoding)
+        mimedata.setUrls(urls)
+        mimedata.setData('text/x-moz-url', encoded_text)
 
     return mimedata
 
 
-def path_mimetypes():
-    return ['text/uri-list', 'text/x-moz-url']
+def path_mimetypes(include_urls=True):
+    """Return a list of mime types that we generate"""
+    mime_types = [
+        'text/plain',
+        'text/plain;charset=utf-8',
+    ]
+    if include_urls:
+        mime_types.append('text/uri-list')
+        mime_types.append('text/x-moz-url')
+    return mime_types
 
 
-class BlockSignals(object):
+class BlockSignals:
     """Context manager for blocking a signals on a widget"""
 
     def __init__(self, *widgets):
@@ -922,7 +1056,7 @@ class BlockSignals(object):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Restore Qt signals when we exit the scope"""
-        for (widget, value) in zip(self.widgets, self.values):
+        for widget, value in zip(self.widgets, self.values):
             widget.blockSignals(value)
 
 
@@ -932,18 +1066,15 @@ class Channel(QtCore.QObject):
 
 
 class Task(QtCore.QRunnable):
-    """Disable auto-deletion to avoid gc issues
-
-    Python's garbage collector will try to double-free the task
-    once it's finished, so disable Qt's auto-deletion as a workaround.
-
-    """
+    """Run a task in the background and return the result using a Channel"""
 
     def __init__(self):
         QtCore.QRunnable.__init__(self)
 
         self.channel = Channel()
         self.result = None
+        # Python's garbage collector will try to double-free the task
+        # once it's finished so disable the Qt auto-deletion.
         self.setAutoDelete(False)
 
     def run(self):
@@ -951,9 +1082,9 @@ class Task(QtCore.QRunnable):
         self.channel.result.emit(self.result)
         self.channel.finished.emit(self)
 
-    # pylint: disable=no-self-use
     def task(self):
-        return None
+        """Perform a long-running task"""
+        return ()
 
     def connect(self, handler):
         self.channel.result.connect(handler, type=Qt.QueuedConnection)
@@ -962,15 +1093,15 @@ class Task(QtCore.QRunnable):
 class SimpleTask(Task):
     """Run a simple callable as a task"""
 
-    def __init__(self, fn, *args, **kwargs):
+    def __init__(self, func, *args, **kwargs):
         Task.__init__(self)
 
-        self.fn = fn
+        self.func = func
         self.args = args
         self.kwargs = kwargs
 
     def task(self):
-        return self.fn(*self.args, **self.kwargs)
+        return self.func(*self.args, **self.kwargs)
 
 
 class RunTask(QtCore.QObject):
@@ -981,13 +1112,15 @@ class RunTask(QtCore.QObject):
         self.tasks = []
         self.task_details = {}
         self.threadpool = QtCore.QThreadPool.globalInstance()
-        self.result_fn = None
+        self.result_func = None
 
     def start(self, task, progress=None, finish=None, result=None):
         """Start the task and register a callback"""
-        self.result_fn = result
+        self.result_func = result
         if progress is not None:
-            progress.show()
+            if hasattr(progress, 'start'):
+                progress.start()
+
         # prevents garbage collection bugs in certain PyQt4 versions
         self.tasks.append(task)
         task_id = id(task)
@@ -996,6 +1129,7 @@ class RunTask(QtCore.QObject):
         self.threadpool.start(task)
 
     def finish(self, task):
+        """The task has finished. Run the finish and result callbacks"""
         task_id = id(task)
         try:
             self.tasks.remove(task)
@@ -1008,6 +1142,8 @@ class RunTask(QtCore.QObject):
             finish = progress = result = None
 
         if progress is not None:
+            if hasattr(progress, 'stop'):
+                progress.stop()
             progress.hide()
 
         if result is not None:
@@ -1016,65 +1152,101 @@ class RunTask(QtCore.QObject):
         if finish is not None:
             finish(task)
 
+    def wait(self):
+        """Wait until all tasks have finished processing"""
+        self.threadpool.waitForDone()
+
 
 # Syntax highlighting
 
 
-def rgb(r, g, b):
+def rgb(red, green, blue):
+    """Create a QColor from r, g, b arguments"""
     color = QtGui.QColor()
-    color.setRgb(r, g, b)
+    color.setRgb(red, green, blue)
     return color
 
 
-def rgba(r, g, b, a=255):
-    color = rgb(r, g, b)
-    color.setAlpha(a)
+def rgba(red, green, blue, alpha=255):
+    """Create a QColor with alpha from r, g, b, a arguments"""
+    color = rgb(red, green, blue)
+    color.setAlpha(alpha)
     return color
 
 
-def RGB(args):
+def rgb_triple(args):
+    """Create a QColor from an argument with an [r, g, b] triple"""
     return rgb(*args)
 
 
 def rgb_css(color):
-    """Convert a QColor into an rgb(int, int, int) CSS string"""
-    return 'rgb(%d, %d, %d)' % (color.red(), color.green(), color.blue())
+    """Convert a QColor into an rgb #abcdef CSS string"""
+    return '#%s' % rgb_hex(color)
 
 
 def rgb_hex(color):
     """Convert a QColor into a hex aabbcc string"""
-    return '%02x%02x%02x' % (color.red(), color.green(), color.blue())
+    return f'{color.red():02x}{color.green():02x}{color.blue():02x}'
 
 
-def hsl(h, s, light):
+def clamp_color(value):
+    """Clamp an integer value between 0 and 255"""
+    return min(255, max(value, 0))
+
+
+def css_color(value):
+    """Convert a #abcdef hex string into a QColor"""
+    if value.startswith('#'):
+        value = value[1:]
+    try:
+        red = clamp_color(int(value[:2], base=16))  # ab
+    except ValueError:
+        red = 255
+    try:
+        green = clamp_color(int(value[2:4], base=16))  # cd
+    except ValueError:
+        green = 255
+    try:
+        blue = clamp_color(int(value[4:6], base=16))  # ef
+    except ValueError:
+        blue = 255
+    return rgb(red, green, blue)
+
+
+def hsl(hue, saturation, lightness):
+    """Return a QColor from hue, saturation and lightness"""
     return QtGui.QColor.fromHslF(
-        utils.clamp(h, 0.0, 1.0), utils.clamp(s, 0.0, 1.0), utils.clamp(light, 0.0, 1.0)
+        utils.clamp(hue, 0.0, 1.0),
+        utils.clamp(saturation, 0.0, 1.0),
+        utils.clamp(lightness, 0.0, 1.0),
     )
 
 
-def hsl_css(h, s, light):
-    return rgb_css(hsl(h, s, light))
+def hsl_css(hue, saturation, lightness):
+    """Convert HSL values to a CSS #abcdef color string"""
+    return rgb_css(hsl(hue, saturation, lightness))
 
 
-def make_format(fg=None, bg=None, bold=False):
+def make_format(foreground=None, background=None, bold=False):
+    """Create a QTextFormat from the provided foreground, background and bold values"""
     fmt = QtGui.QTextCharFormat()
-    if fg:
-        fmt.setForeground(fg)
-    if bg:
-        fmt.setBackground(bg)
+    if foreground:
+        fmt.setForeground(foreground)
+    if background:
+        fmt.setBackground(background)
     if bold:
         fmt.setFontWeight(QtGui.QFont.Bold)
     return fmt
 
 
-class ImageFormats(object):
+class ImageFormats:
     def __init__(self):
         # returns a list of QByteArray objects
         formats_qba = QtGui.QImageReader.supportedImageFormats()
         # portability: python3 data() returns bytes, python2 returns str
         decode = core.decode
         formats = [decode(x.data()) for x in formats_qba]
-        self.extensions = set(['.' + fmt for fmt in formats])
+        self.extensions = {'.' + fmt for fmt in formats}
 
     def ok(self, filename):
         _, ext = os.path.splitext(filename)
@@ -1136,3 +1308,45 @@ def get_selected_items(widget, idx):
     """Return the selected items under the top-level item"""
     item = widget.topLevelItem(idx)
     return tree_selection_items(item)
+
+
+def add_menu_actions(menu, menu_actions):
+    """Add actions to a menu, treating None as a separator"""
+    current_actions = menu.actions()
+    if current_actions:
+        first_action = current_actions[0]
+    else:
+        first_action = None
+        menu.addSeparator()
+
+    for action in menu_actions:
+        if action is None:
+            action = menu_separator(menu)
+        menu.insertAction(first_action, action)
+
+
+def fontmetrics_width(metrics, text):
+    """Get the width in pixels of specified text
+
+    Calls QFontMetrics.horizontalAdvance() when available.
+    QFontMetricswidth() is deprecated. Qt 5.11 added horizontalAdvance().
+    """
+    if hasattr(metrics, 'horizontalAdvance'):
+        return metrics.horizontalAdvance(text)
+    return metrics.width(text)
+
+
+def text_width(font, text):
+    """Get the width in pixels for the QFont and text"""
+    metrics = QtGui.QFontMetrics(font)
+    return fontmetrics_width(metrics, text)
+
+
+def text_size(font, text):
+    """Return the width in pixels for the specified text
+
+    :param font_or_widget: The QFont or widget providing the font to use.
+    :param text: The text to measure.
+    """
+    metrics = QtGui.QFontMetrics(font)
+    return (fontmetrics_width(metrics, text), metrics.height())

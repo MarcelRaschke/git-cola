@@ -1,10 +1,12 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-from qtpy import PYQT4
 from qtpy import QtCore
 from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
+
+try:
+    from qtpy import PYQT4
+except ImportError:
+    PYQT4 = False
 
 from . import hotkeys
 
@@ -39,7 +41,7 @@ def _map_rect_to_scene(self, rect):
 
 
 def wheel_translation(event):
-    """Return the Tx Ty translation delta for a pan"""
+    """Return the (Tx, Ty) translation delta for a pan"""
     if PYQT4:
         tx = event.delta()
         ty = 0.0

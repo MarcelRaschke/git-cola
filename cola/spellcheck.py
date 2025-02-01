@@ -1,15 +1,15 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
+import codecs
 import collections
 import os
 
-from cola import core
+from . import resources
 
 __copyright__ = """
 2012 Peter Norvig (http://norvig.com/spell-correct.html)
 2013-2018 David Aguilar <davvid@gmail.com>
 """
 
-alphabet = 'abcdefghijklmnopqrstuvwxyz'
+ALPHABET = 'abcdefghijklmnopqrstuvwxyz'
 
 
 def train(features, model):
@@ -22,17 +22,17 @@ def edits1(word):
     splits = [(word[:i], word[i:]) for i in range(len(word) + 1)]
     deletes = [a + b[1:] for a, b in splits if b]
     transposes = [a + b[1] + b[0] + b[2:] for a, b in splits if len(b) > 1]
-    replaces = [a + c + b[1:] for a, b in splits for c in alphabet if b]
-    inserts = [a + c + b for a, b in splits for c in alphabet]
+    replaces = [a + c + b[1:] for a, b in splits for c in ALPHABET if b]
+    inserts = [a + c + b for a, b in splits for c in ALPHABET]
     return set(deletes + transposes + replaces + inserts)
 
 
 def known_edits2(word, words):
-    return set(e2 for e1 in edits1(word) for e2 in edits1(e1) if e2 in words)
+    return {e2 for e1 in edits1(word) for e2 in edits1(e1) if e2 in words}
 
 
 def known(word, words):
-    return set(w for w in word if w in words)
+    return {w for w in word if w in words}
 
 
 def suggest(word, words):
@@ -50,16 +50,15 @@ def correct(word, words):
     return max(candidates, key=words.get)
 
 
-class NorvigSpellCheck(object):
+class NorvigSpellCheck:
     def __init__(
         self,
-        words='/usr/share/dict/words',
-        cracklib='/usr/share/dict/cracklib-small',
-        propernames='/usr/share/dict/propernames',
+        words='dict/words',
+        propernames='dict/propernames',
     ):
-        self.dictwords = words
-        self.cracklib = cracklib
-        self.propernames = propernames
+        data_dirs = resources.xdg_data_dirs()
+        self.dictwords = resources.find_first(words, data_dirs)
+        self.propernames = resources.find_first(propernames, data_dirs)
         self.words = collections.defaultdict(lambda: 1)
         self.extra_words = set()
         self.dictionary = None
@@ -91,13 +90,10 @@ class NorvigSpellCheck(object):
         paths = []
 
         words = self.dictwords
-        cracklib = self.cracklib
         propernames = self.propernames
         cfg_dictionary = self.dictionary
 
-        if cracklib and os.path.exists(cracklib):
-            paths.append((cracklib, True))
-        elif words and os.path.exists(words):
+        if words and os.path.exists(words):
             paths.append((words, True))
 
         if propernames and os.path.exists(propernames):
@@ -106,13 +102,15 @@ class NorvigSpellCheck(object):
         if cfg_dictionary and os.path.exists(cfg_dictionary):
             paths.append((cfg_dictionary, False))
 
-        for (path, title) in paths:
+        for path, title in paths:
             try:
-                with open(path, 'r') as f:
-                    for word in f:
-                        word = core.decode(word.rstrip())
+                with codecs.open(
+                    path, 'r', encoding='utf-8', errors='ignore'
+                ) as words_file:
+                    for line in words_file:
+                        word = line.rstrip()
                         yield word
                         if title:
                             yield word.title()
-            except IOError:
+            except OSError:
                 pass

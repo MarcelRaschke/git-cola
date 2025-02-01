@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import argparse
 import sys
 
@@ -13,14 +12,9 @@ def main(argv=None):
     return args.func(args)
 
 
-def winmain():
-    """Windows git-dag entrypoint"""
-    return app.winmain(main)
-
-
 def shortcut_launch():
     """Run git-dag from a Windows shortcut"""
-    return app.winmain(main, ['--prompt'])
+    return main(argv=['--prompt'])
 
 
 def parse_args(argv=None):
@@ -40,7 +34,9 @@ def parse_args(argv=None):
         default=1000,
         help='number of commits to display',
     )
-    parser.add_argument('args', nargs='*', metavar='<args>', help='git log arguments')
+    parser.add_argument(
+        'args', nargs=argparse.REMAINDER, metavar='<args>', help='git log arguments'
+    )
     args, rest = parser.parse_known_args(args=argv)
     if rest:
         # splice unknown arguments to the beginning ~
@@ -51,6 +47,6 @@ def parse_args(argv=None):
 
 def cmd_dag(args):
     """Run git-dag via the `git cola dag` sub-command"""
-    context = app.application_init(args)
+    context = app.application_init(args, app_name='Git DAG')
     view = git_dag(context, args=args, show=False)
     return app.application_start(context, view)

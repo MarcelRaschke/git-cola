@@ -1,12 +1,9 @@
 """Tests basic git operations: commit, log, config"""
-# pylint: disable=redefined-outer-name
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from . import helper
 from .helper import app_context
 
 
-# These assertions make flake8 happy. It considers them unused imports otherwise.
+# Prevent unused imports lint errors.
 assert app_context is not None
 
 

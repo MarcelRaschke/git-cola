@@ -30,7 +30,7 @@ for git-cola's File Browser by Uri Okrent.
 - upstream.svg
 
 Copyright (C) 2011 Uri Okrent
-Copyright (C) 2015-2017 David Aguilar and contributors
+Copyright (C) 2015-2024 David Aguilar
 
 License: MIT
 
@@ -74,6 +74,7 @@ The following files are from Github's
 - git-merge.svg
 - link-external.svg
 - pencil.svg
+- play.svg
 - plus.svg
 - primitive-dot.svg
 - question.svg
@@ -87,6 +88,7 @@ The following files are from Github's
 - sync.svg
 - tag.svg
 - telescope.svg
+- terminal.svg
 - three-bars.svg
 - trashcan.svg
 - unfold.svg

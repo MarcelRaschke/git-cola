@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from qtpy import QtWidgets
 from qtpy import QtCore
 from qtpy.QtCore import Qt
@@ -25,7 +23,7 @@ def create_new_branch(context, revision=''):
     return view
 
 
-class CreateOpts(object):
+class CreateOpts:
     def __init__(self, context):
         self.context = context
         self.reset = False
@@ -190,8 +188,8 @@ class CreateBranchDialog(standard.Dialog):
         self.buttons_layout = qtutils.hbox(
             defs.margin,
             defs.spacing,
-            self.close_button,
             qtutils.STRETCH,
+            self.close_button,
             self.create_button,
         )
 
@@ -215,7 +213,6 @@ class CreateBranchDialog(standard.Dialog):
         qtutils.connect_toggle(self.tag_radio, self.display_model)
 
         branches = self.branch_list
-        # pylint: disable=no-member
         branches.itemSelectionChanged.connect(self.branch_item_changed)
 
         thread = self.thread
@@ -250,7 +247,7 @@ class CreateBranchDialog(standard.Dialog):
         if not branch or not revision:
             Interaction.critical(
                 N_('Missing Data'),
-                N_('Please provide both a branch ' 'name and revision expression.'),
+                N_('Please provide both a branch name and revision expression.'),
             )
             return
         if branch in existing_branches:
@@ -263,9 +260,10 @@ class CreateBranchDialog(standard.Dialog):
             check_branch = bool(commits)
 
         if check_branch:
-            msg = N_(
-                'Resetting "%(branch)s" to "%(revision)s" ' 'will lose commits.'
-            ) % dict(branch=branch, revision=revision)
+            msg = N_('Resetting "%(branch)s" to "%(revision)s" will lose commits.') % {
+                'branch': branch,
+                'revision': revision,
+            }
             if ffwd_only:
                 Interaction.critical(N_('Branch Exists'), msg)
                 return
@@ -282,9 +280,10 @@ class CreateBranchDialog(standard.Dialog):
             line = N_('Recovering lost commits may not be easy.')
             lines.append(line)
 
-            info_text = N_('Reset "%(branch)s" to "%(revision)s"?') % dict(
-                branch=branch, revision=revision
-            )
+            info_text = N_('Reset "%(branch)s" to "%(revision)s"?') % {
+                'branch': branch,
+                'revision': revision,
+            }
 
             if not Interaction.confirm(
                 N_('Reset Branch?'),
@@ -306,20 +305,22 @@ class CreateBranchDialog(standard.Dialog):
         self.progress.hide()
         del self.progress
 
-        for (cmd, status, _, _) in results:
+        for cmd, status, _, _ in results:
             if status != 0:
                 Interaction.critical(
                     N_('Error Creating Branch'),
                     (
                         N_('"%(command)s" returned exit status "%(status)d"')
-                        % dict(command='git ' + cmd, status=status)
+                        % {
+                            'command': 'git ' + cmd,
+                            'status': status,
+                        }
                     ),
                 )
                 return
 
         self.accept()
 
-    # pylint: disable=unused-argument
     def branch_item_changed(self, *rest):
         """This callback is called when the branch selection changes"""
         # When the branch selection changes then we should update

@@ -1,4 +1,4 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
+import datetime
 from functools import partial
 
 from qtpy import QtCore
@@ -15,6 +15,7 @@ from .. import hotkeys
 from .. import icons
 from .. import textwrap
 from .. import qtutils
+from .. import spellcheck
 from ..interaction import Interaction
 from ..gitcmds import commit_message_path
 from ..i18n import N_
@@ -23,25 +24,34 @@ from ..models import prefs
 from ..qtutils import get
 from ..utils import Group
 from . import defs
+from . import standard
 from .selectcommits import select_commits
-from .spellcheck import SpellCheckTextEdit
-from .text import HintedLineEdit
+from .spellcheck import SpellCheckLineEdit, SpellCheckTextEdit
+from .text import anchor_mode
 
 
 class CommitMessageEditor(QtWidgets.QFrame):
+    commit_finished = Signal(object)
     cursor_changed = Signal(int, int)
     down = Signal()
     up = Signal()
 
     def __init__(self, context, parent):
         QtWidgets.QFrame.__init__(self, parent)
+        cfg = context.cfg
         self.context = context
         self.model = model = context.model
         self.spellcheck_initialized = False
+        self.spellcheck = spellcheck.NorvigSpellCheck()
+        self.spellcheck.set_dictionary(cfg.get('cola.dictionary', None))
 
         self._linebreak = None
         self._textwidth = None
         self._tabwidth = None
+        self._last_commit_datetime = None  # The most recently selected commit date.
+        self._last_commit_datetime_backup = None  # Used when amending.
+        self._git_commit_date = None  # Overrides the commit date when committing.
+        self._widgets_initialized = False  # Defer setting the cursor position height.
 
         # Actions
         self.signoff_action = qtutils.add_action(
@@ -63,9 +73,8 @@ class CommitMessageEditor(QtWidgets.QFrame):
         self.move_up = actions.move_up(self)
         self.move_down = actions.move_down(self)
 
-        # Menu acctions
+        # Menu actions
         self.menu_actions = menu_actions = [
-            None,
             self.signoff_action,
             self.commit_action,
             None,
@@ -74,26 +83,40 @@ class CommitMessageEditor(QtWidgets.QFrame):
             None,
             self.move_up,
             self.move_down,
+            None,
         ]
 
         # Widgets
-        self.summary = CommitSummaryLineEdit(context)
-        self.summary.setMinimumHeight(defs.tool_button_height)
+        self.summary = CommitSummaryLineEdit(context, check=self.spellcheck)
         self.summary.menu_actions.extend(menu_actions)
+        self.summary.addAction(self.commit_action)
+        self.summary.addAction(self.move_up)
+        self.summary.addAction(self.move_down)
+        self.summary.addAction(self.signoff_action)
 
-        cfg = context.cfg
-        self.summary_validator = MessageValidator(context, parent=self.summary)
-        self.summary.setValidator(self.summary_validator)
-
-        self.description = CommitMessageTextEdit(context, parent=self)
-        self.description.set_dictionary(cfg.get('cola.dictionary', None))
+        self.description = CommitMessageTextEdit(
+            context, check=self.spellcheck, parent=self
+        )
         self.description.menu_actions.extend(menu_actions)
 
-        commit_button_tooltip = N_('Commit staged changes\n' 'Shortcut: Ctrl+Enter')
+        commit_button_tooltip = N_('Commit staged changes\nShortcut: Ctrl+Enter')
         self.commit_button = qtutils.create_button(
             text=N_('Commit@@verb'), tooltip=commit_button_tooltip, icon=icons.commit()
         )
         self.commit_group = Group(self.commit_action, self.commit_button)
+        self.commit_progress_bar = standard.progress_bar(
+            self,
+            disable=(self.commit_button, self.summary, self.description),
+        )
+
+        # make the position label fixed size to avoid layout issues
+        font = qtutils.default_monospace_font()
+        font.setPixelSize(defs.action_text)
+        text_width = qtutils.text_width(font, '999:999')
+        cursor_position_label = self.cursor_position_label = QtWidgets.QLabel(self)
+        cursor_position_label.setFont(font)
+        cursor_position_label.setMinimumWidth(text_width)
+        cursor_position_label.setAlignment(Qt.AlignCenter)
 
         self.actions_menu = qtutils.create_menu(N_('Actions'), self)
         self.actions_button = qtutils.create_toolbutton(
@@ -109,8 +132,14 @@ class CommitMessageEditor(QtWidgets.QFrame):
         self.amend_action = self.actions_menu.addAction(N_('Amend Last Commit'))
         self.amend_action.setIcon(icons.edit())
         self.amend_action.setCheckable(True)
-        self.amend_action.setShortcut(hotkeys.AMEND)
+        self.amend_action.setShortcuts(hotkeys.AMEND)
         self.amend_action.setShortcutContext(Qt.ApplicationShortcut)
+
+        # Commit Date
+        self.commit_date_action = self.actions_menu.addAction(N_('Set Commit Date'))
+        self.commit_date_action.setCheckable(True)
+        self.commit_date_action.setChecked(False)
+        qtutils.connect_action_bool(self.commit_date_action, self.set_commit_date)
 
         # Bypass hooks
         self.bypass_commit_hooks_action = self.actions_menu.addAction(
@@ -128,9 +157,9 @@ class CommitMessageEditor(QtWidgets.QFrame):
         # Spell checker
         self.check_spelling_action = self.actions_menu.addAction(N_('Check Spelling'))
         self.check_spelling_action.setCheckable(True)
-        spellcheck = prefs.spellcheck(context)
-        self.check_spelling_action.setChecked(spellcheck)
-        self.toggle_check_spelling(spellcheck)
+        spell_check = prefs.spellcheck(context)
+        self.check_spelling_action.setChecked(spell_check)
+        self.toggle_check_spelling(spell_check)
 
         # Line wrapping
         self.autowrap_action = self.actions_menu.addAction(N_('Auto-Wrap Lines'))
@@ -152,15 +181,14 @@ class CommitMessageEditor(QtWidgets.QFrame):
             defs.spacing,
             self.actions_button,
             self.summary,
+            self.commit_progress_bar,
             self.commit_button,
+            self.cursor_position_label,
         )
-        self.toplayout.setContentsMargins(
-            defs.margin, defs.no_margin, defs.no_margin, defs.no_margin
-        )
+        self.topwidget = QtWidgets.QWidget()
+        self.topwidget.setLayout(self.toplayout)
 
-        self.mainlayout = qtutils.vbox(
-            defs.no_margin, defs.spacing, self.toplayout, self.description
-        )
+        self.mainlayout = qtutils.vbox(defs.no_margin, defs.spacing, self.description)
         self.setLayout(self.mainlayout)
 
         qtutils.connect_button(self.commit_button, self.commit)
@@ -173,31 +201,28 @@ class CommitMessageEditor(QtWidgets.QFrame):
             self.check_spelling_action, self.toggle_check_spelling
         )
 
-        # Handle the one-off autowrapping
+        # Handle the one-off auto-wrapping
         qtutils.connect_action_bool(self.autowrap_action, self.set_linebreak)
 
-        qtutils.add_action(
-            self.summary, N_('Move Down'), self.focus_description, *hotkeys.ACCEPT
-        )
-
-        qtutils.add_action(
-            self.summary, N_('Move Down'), self.summary_cursor_down, hotkeys.DOWN
-        )
+        self.summary.accepted.connect(self.focus_description)
+        self.summary.down_pressed.connect(self.summary_cursor_down)
 
         self.model.commit_message_changed.connect(
             self.set_commit_message, type=Qt.QueuedConnection
         )
+        self.commit_finished.connect(self._commit_finished, type=Qt.QueuedConnection)
 
         self.summary.cursor_changed.connect(self.cursor_changed.emit)
         self.description.cursor_changed.connect(
             # description starts at line 2
             lambda row, col: self.cursor_changed.emit(row + 2, col)
         )
-
-        # pylint: disable=no-member
         self.summary.textChanged.connect(self.commit_summary_changed)
         self.description.textChanged.connect(self._commit_message_changed)
         self.description.leave.connect(self.focus_summary)
+        self.cursor_changed.connect(self.show_cursor_position)
+        # Set initial position.
+        self.show_cursor_position(1, 0)
 
         self.commit_group.setEnabled(False)
 
@@ -214,7 +239,6 @@ class CommitMessageEditor(QtWidgets.QFrame):
         model.set_commitmsg(commit_msg)
 
         # Allow tab to jump from the summary to the description
-        self.setTabOrder(self.summary, self.description)
         self.setFont(qtutils.diff_font(context))
         self.setFocusProxy(self.summary)
 
@@ -233,7 +257,7 @@ class CommitMessageEditor(QtWidgets.QFrame):
         QtCore.QTimer.singleShot(1, self.restore_size)
 
     def restore_size(self):
-        self.setMaximumHeight(2 ** 13)
+        self.setMaximumHeight(2**13)
 
     def focus_summary(self):
         self.summary.setFocus()
@@ -249,15 +273,10 @@ class CommitMessageEditor(QtWidgets.QFrame):
         subsequence "down" press moves to the end of the line.
 
         """
-        cur_position = self.summary.cursorPosition()
-        end_position = len(get(self.summary))
-        if cur_position == end_position:
-            self.focus_description()
-        else:
-            self.summary.setCursorPosition(end_position)
+        self.focus_description()
 
     def commit_message(self, raw=True):
-        """Return the commit message as a unicode string"""
+        """Return the commit message as a Unicode string"""
         summary = get(self.summary)
         if raw:
             description = get(self.description)
@@ -277,7 +296,7 @@ class CommitMessageEditor(QtWidgets.QFrame):
             return text
         return textwrap.word_wrap(text, self._tabwidth, self._textwidth)
 
-    def commit_summary_changed(self, value):
+    def commit_summary_changed(self):
         """Respond to changes to the `summary` field
 
         Newlines can enter the `summary` field when pasting, which is
@@ -286,6 +305,7 @@ class CommitMessageEditor(QtWidgets.QFrame):
         "extended description" field.
 
         """
+        value = self.summary.value()
         if '\n' in value:
             summary, description = value.split('\n', 1)
             description = description.lstrip('\n')
@@ -297,12 +317,12 @@ class CommitMessageEditor(QtWidgets.QFrame):
             self.summary.set_value(summary, block=True)
             self.description.set_value(description)
         self._commit_message_changed()
+        self.summary.cursor_position.emit()
 
     def _commit_message_changed(self, _value=None):
         """Update the model when values change"""
         message = self.commit_message()
         self.model.set_commitmsg(message, notify=False)
-        self.refresh_palettes()
         self.update_actions()
 
     def clear(self):
@@ -321,33 +341,23 @@ class CommitMessageEditor(QtWidgets.QFrame):
         commit_enabled = bool(get(self.summary))
         self.commit_group.setEnabled(commit_enabled)
 
-    def refresh_palettes(self):
-        """Update the color palette for the hint text"""
-        self.summary.hint.refresh()
-        self.description.hint.refresh()
-
     def set_commit_message(self, message):
         """Set the commit message to match the observed model"""
         # Parse the "summary" and "description" fields
         lines = message.splitlines()
-
         num_lines = len(lines)
-
         if num_lines == 0:
             # Message is empty
             summary = ''
             description = ''
-
         elif num_lines == 1:
             # Message has a summary only
             summary = lines[0]
             description = ''
-
         elif num_lines == 2:
             # Message has two lines; this is not a common case
             summary = lines[0]
             description = lines[1]
-
         else:
             # Summary and several description lines
             summary = lines[0]
@@ -360,16 +370,10 @@ class CommitMessageEditor(QtWidgets.QFrame):
 
         focus_summary = not summary
         focus_description = not description
-
         # Update summary
         self.summary.set_value(summary, block=True)
-
         # Update description
         self.description.set_value(description, block=True)
-
-        # Update text color
-        self.refresh_palettes()
-
         # Focus the empty summary or description
         if focus_summary:
             self.summary.setFocus()
@@ -377,7 +381,6 @@ class CommitMessageEditor(QtWidgets.QFrame):
             self.description.setFocus()
         else:
             self.summary.cursor_position.emit()
-
         self.update_actions()
 
     def set_expandtab(self, value):
@@ -408,6 +411,13 @@ class CommitMessageEditor(QtWidgets.QFrame):
         with qtutils.BlockSignals(self.amend_action):
             self.amend_action.setEnabled(can_amend)
             self.amend_action.setChecked(checked)
+        # Store/restore the last commit date when amending.
+        if checked:
+            self._last_commit_datetime_backup = self._last_commit_datetime
+            self._last_commit_datetime = _get_latest_commit_datetime(self.context)
+        else:
+            self._last_commit_datetime = self._last_commit_datetime_backup
+            self._last_commit_datetime_backup = None
 
     def commit(self):
         """Attempt to create a commit from the index and commit message."""
@@ -437,7 +447,7 @@ class CommitMessageEditor(QtWidgets.QFrame):
             )
             if self.model.modified:
                 informative_text = N_(
-                    'Would you like to stage and ' 'commit all modified files?'
+                    'Would you like to stage and commit all modified files?'
                 )
                 if not Interaction.confirm(
                     N_('Stage and commit?'),
@@ -465,7 +475,7 @@ class CommitMessageEditor(QtWidgets.QFrame):
                 N_(
                     'This commit has already been published.\n'
                     'This operation will rewrite published history.\n'
-                    'You probably don\'t want to do this.'
+                    "You probably don't want to do this."
                 ),
                 N_('Amend the published commit?'),
                 N_('Amend Commit'),
@@ -474,10 +484,39 @@ class CommitMessageEditor(QtWidgets.QFrame):
             )
         ):
             return
-        no_verify = get(self.bypass_commit_hooks_action)
+
         sign = get(self.sign_action)
-        cmds.do(cmds.Commit, context, amend, msg, sign, no_verify=no_verify)
+        no_verify = get(self.bypass_commit_hooks_action)
         self.bypass_commit_hooks_action.setChecked(False)
+        if self.commit_date_action.isChecked():
+            self.commit_date_action.setChecked(False)
+            date = self._git_commit_date
+        else:
+            date = None
+
+        task = qtutils.SimpleTask(
+            cmds.run(
+                cmds.Commit,
+                context,
+                amend,
+                msg,
+                sign,
+                no_verify=no_verify,
+                date=date,
+            )
+        )
+        self.context.runtask.start(
+            task,
+            finish=self.commit_finished.emit,
+            progress=self.commit_progress_bar,
+        )
+
+    def _commit_finished(self, task):
+        """Reset widget state on completion of the commit task"""
+        title = N_('Commit failed')
+        status, out, err = task.result
+        Interaction.command(title, 'git commit', status, out, err)
+        self.setFocus()
 
     def build_fixup_menu(self):
         self.build_commits_menu(
@@ -500,14 +539,14 @@ class CommitMessageEditor(QtWidgets.QFrame):
         commits = dag.RepoReader(context, params)
 
         menu_commits = []
-        for idx, c in enumerate(commits.get()):
-            menu_commits.insert(0, c)
+        for idx, commit in enumerate(commits.get()):
+            menu_commits.insert(0, commit)
             if idx > 5:
                 continue
 
         menu.clear()
-        for c in menu_commits:
-            menu.addAction(prefix + c.summary, cmds.run(cmd, context, c.oid))
+        for commit in menu_commits:
+            menu.addAction(prefix + commit.summary, cmds.run(cmd, context, commit.oid))
 
         if len(commits) == 6:
             menu.addSeparator()
@@ -531,10 +570,10 @@ class CommitMessageEditor(QtWidgets.QFrame):
         self.choose_commit(cmds.LoadFixupMessage)
 
     def toggle_check_spelling(self, enabled):
-        spellcheck = self.description.spellcheck
+        spell_check = self.spellcheck
         cfg = self.context.cfg
 
-        if cfg.get_user(prefs.SPELL_CHECK) != enabled:
+        if prefs.spellcheck(self.context) != enabled:
             cfg.set_user(prefs.SPELL_CHECK, enabled)
         if enabled and not self.spellcheck_initialized:
             # Add our name to the dictionary
@@ -542,88 +581,328 @@ class CommitMessageEditor(QtWidgets.QFrame):
             user_name = cfg.get('user.name')
             if user_name:
                 for part in user_name.split():
-                    spellcheck.add_word(part)
+                    spell_check.add_word(part)
 
             # Add our email address to the dictionary
             user_email = cfg.get('user.email')
             if user_email:
                 for part in user_email.split('@'):
                     for elt in part.split('.'):
-                        spellcheck.add_word(elt)
+                        spell_check.add_word(elt)
 
             # git jargon
-            spellcheck.add_word('Acked')
-            spellcheck.add_word('Signed')
-            spellcheck.add_word('Closes')
-            spellcheck.add_word('Fixes')
+            spell_check.add_word('Acked')
+            spell_check.add_word('Signed')
+            spell_check.add_word('Closes')
+            spell_check.add_word('Fixes')
 
+        self.summary.highlighter.enable(enabled)
         self.description.highlighter.enable(enabled)
 
+    def show_cursor_position(self, rows, cols):
+        """Display the cursor position with warnings and error colors for long lines"""
+        display_content = '%02d:%02d' % (rows, cols)
+        try:
+            max_width = max(
+                len(line) for line in self.commit_message(raw=False).splitlines()
+            )
+        except ValueError:
+            max_width = 0
+        if max_width > 78:
+            color = 'red'
+        elif max_width > 72:
+            color = '#ff8833'
+        elif max_width > 64:
+            color = 'yellow'
+        else:
+            color = ''
+        if color:
+            radius = defs.small_icon // 2
+            stylesheet = f"""
+                color: black;
+                background-color: {color};
+                border-radius: {radius}px;
+            """
+        else:
+            stylesheet = ''
+        self.cursor_position_label.setStyleSheet(stylesheet)
+        self.cursor_position_label.setText(display_content)
 
-class MessageValidator(QtGui.QValidator):
-    """Prevent invalid branch names"""
+    def set_commit_date(self, enabled):
+        """Choose the date and time that is used when authoring commits"""
+        if not enabled:
+            self._git_commit_date = None
+            return
+        widget = CommitDateDialog(
+            self, self.context, commit_datetime=self._last_commit_datetime
+        )
+        if widget.exec_() == QtWidgets.QDialog.Accepted:
+            commit_date = widget.commit_date()
+            Interaction.log(N_('Setting commit date to %s') % commit_date)
+            self._git_commit_date = commit_date
+            self._last_commit_datetime = CommitDateDialog.tick_time(widget.datetime())
+        else:
+            self.commit_date_action.setChecked(False)
 
-    def __init__(self, context, parent=None):
-        super(MessageValidator, self).__init__(parent)
+    # Qt overrides
+    def showEvent(self, event):
+        """Resize the position label once the sizes are known"""
+        super().showEvent(event)
+        if not self._widgets_initialized:
+            self._widgets_initialized = True
+            height = self.summary.height()
+            self.commit_button.setMinimumHeight(height)
+            self.cursor_position_label.setMaximumHeight(defs.small_icon + defs.spacing)
+            self.commit_progress_bar.setMaximumHeight(height - 2)
+            self.commit_progress_bar.setMaximumWidth(self.commit_button.width())
+
+
+def _get_latest_commit_datetime(context):
+    """Query the commit time from Git or fallback to the current time when unavailable"""
+    commit_datetime = datetime.datetime.now()
+    status, out, _ = context.git.log('-1', '--format=%aI', 'HEAD')
+    if status != 0 or not out:
+        return commit_datetime
+    try:
+        commit_datetime = datetime.datetime.fromisoformat(out)
+    except ValueError:
+        pass
+    return commit_datetime
+
+
+class CommitDateDialog(QtWidgets.QDialog):
+    """Choose the date and time used when authoring commits"""
+
+    slider_range = 500
+
+    def __init__(self, parent, context, commit_datetime=None):
+        QtWidgets.QDialog.__init__(self, parent)
+        slider_range = self.slider_range
         self.context = context
-        self._comment_char = None
-        self.refresh()
-        context.cfg.updated.connect(self.refresh, type=Qt.QueuedConnection)
+        self._calendar_widget = calendar_widget = QtWidgets.QCalendarWidget()
+        self._time_widget = time_widget = QtWidgets.QTimeEdit()
+        time_widget.setDisplayFormat('hh:mm:ss AP')
 
-    def refresh(self):
+        # Horizontal slider moves the date and time backwards and forwards.
+        self._slider = slider = QtWidgets.QSlider(Qt.Horizontal)
+        slider.setRange(0, slider_range)  # Mapped from 00:00:00 to 23:59:59
+
+        self._tick_backward = tick_backward = qtutils.create_toolbutton_with_callback(
+            partial(self._adjust_slider, -1),
+            '-',
+            None,
+            N_('Decrement'),
+            repeat=True,
+        )
+        self._tick_forward = tick_forward = qtutils.create_toolbutton_with_callback(
+            partial(self._adjust_slider, 1),
+            '+',
+            None,
+            N_('Increment'),
+            repeat=True,
+        )
+        self._reset_to_commit = (
+            reset_to_commit
+        ) = qtutils.create_toolbutton_with_callback(
+            self._reset_commit_time,
+            None,
+            icons.sync(),
+            N_('Reset time to latest commit'),
+        )
+
+        cancel_button = QtWidgets.QPushButton(N_('Cancel'))
+        cancel_button.setIcon(icons.close())
+
+        set_commit_time_button = QtWidgets.QPushButton(N_('Set Date and Time'))
+        set_commit_time_button.setDefault(True)
+        set_commit_time_button.setIcon(icons.ok())
+
+        button_layout = qtutils.hbox(
+            defs.no_margin,
+            defs.button_spacing,
+            cancel_button,
+            qtutils.STRETCH,
+            set_commit_time_button,
+        )
+        slider_layout = qtutils.hbox(
+            defs.no_margin,
+            defs.spacing,
+            tick_backward,
+            slider,
+            tick_forward,
+            reset_to_commit,
+            time_widget,
+        )
+        layout = qtutils.vbox(
+            defs.small_margin,
+            defs.spacing,
+            calendar_widget,
+            slider_layout,
+            defs.button_spacing,
+            button_layout,
+        )
+        self.setLayout(layout)
+        self.setWindowTitle(N_('Set Commit Date'))
+        self.setWindowModality(Qt.ApplicationModal)
+
+        if commit_datetime is None:
+            commit_datetime = self.tick_time(_get_latest_commit_datetime(context))
+        time_widget.setTime(commit_datetime.time())
+        calendar_widget.setSelectedDate(commit_datetime.date())
+        self._update_slider_from_datetime(commit_datetime)
+
+        self._right_action = qtutils.add_action(
+            self, N_('Increment'), partial(self._adjust_slider, 1), hotkeys.CTRL_RIGHT
+        )
+        self._left_action = qtutils.add_action(
+            self, N_('Decrement'), partial(self._adjust_slider, -1), hotkeys.CTRL_LEFT
+        )
+
+        time_widget.timeChanged.connect(self._update_slider_from_time_signal)
+        slider.valueChanged.connect(self._update_time_from_slider)
+        calendar_widget.activated.connect(lambda _: self.accept())
+
+        cancel_button.clicked.connect(self.reject)
+        set_commit_time_button.clicked.connect(self.accept)
+
+    @classmethod
+    def tick_time(cls, commit_datetime):
+        """Tick time forward"""
+        seconds_per_day = 86400
+        seconds_range = seconds_per_day - 1
+        one_tick = seconds_range // cls.slider_range  # 172 seconds (2m52s)
+        return commit_datetime + datetime.timedelta(seconds=one_tick)
+
+    def datetime(self):
+        """Return the calculated datetime value"""
+        # Combine the calendar widget's date with the time widget's time.
+        time_value = self._time_widget.time().toPyTime()
+        date_value = self._calendar_widget.selectedDate().toPyDate()
+        date_time = datetime.datetime(
+            date_value.year,
+            date_value.month,
+            date_value.day,
+            time_value.hour,
+            time_value.minute,
+            time_value.second,
+        )
+        return date_time.astimezone()
+
+    def commit_date(self):
+        """Return the selected datetime as a string for use by Git"""
+        return self.datetime().strftime('%a %b %d %H:%M:%S %Y %z')
+
+    def _update_time_from_slider(self, value):
+        """Map the slider value to an offset corresponding to the current time.
+
+        The passed-in value will be between 0 and range.
+        """
+        seconds_per_day = 86400
+        seconds_range = seconds_per_day - 1
+        ratio = value / self.slider_range
+        delta = datetime.timedelta(seconds=int(ratio * seconds_range))
+        midnight = datetime.datetime(1999, 12, 31)
+        new_time = (midnight + delta).time()
+        time_widget = self._time_widget
+        with qtutils.BlockSignals(time_widget):
+            time_widget.setTime(new_time)
+
+    def _adjust_slider(self, amount):
+        """Adjust the slider forward or backwards"""
+        new_value = self._slider.value() + amount
+        self._slider.setValue(new_value)
+
+    def _update_slider_from_time_signal(self, new_time):
+        """Update the time slider to match the new time"""
+        self._update_slider_from_time(new_time.toPyTime())
+
+    def _update_slider_from_datetime(self, commit_datetime):
+        """Update the time slider to match the specified datetime"""
+        commit_time = commit_datetime.time()
+        self._update_slider_from_time(commit_time)
+
+    def _update_slider_from_time(self, commit_time):
+        """Update the slider to match the specified time."""
+        seconds_since_midnight = (
+            60 * 60 * commit_time.hour + 60 * commit_time.minute + commit_time.second
+        )
+        seconds_per_day = 86400
+        seconds_range = seconds_per_day - 1
+        ratio = seconds_since_midnight / seconds_range
+        value = int(self.slider_range * ratio)
+        with qtutils.BlockSignals(self._slider):
+            self._slider.setValue(value)
+
+    def _reset_commit_time(self):
+        """Reset the commit time to match the most recent commit"""
+        commit_datetime = _get_latest_commit_datetime(self.context)
+        with qtutils.BlockSignals(self._time_widget):
+            self._time_widget.setTime(commit_datetime.time())
+        with qtutils.BlockSignals(self._calendar_widget):
+            self._calendar_widget.setSelectedDate(commit_datetime.date())
+        self._update_slider_from_datetime(commit_datetime)
+
+
+class CommitSummaryLineEdit(SpellCheckLineEdit):
+    """Text input field for the commit summary"""
+
+    down_pressed = Signal()
+    accepted = Signal()
+
+    def __init__(self, context, check=None, parent=None):
+        hint = N_('Commit summary')
+        SpellCheckLineEdit.__init__(self, context, hint, check=check, parent=parent)
+        self._comment_char = None
+        self._refresh_config()
+
+        self.textChanged.connect(self._update_summary_text, Qt.QueuedConnection)
+        context.cfg.updated.connect(self._refresh_config, type=Qt.QueuedConnection)
+
+    def _refresh_config(self):
         """Update comment char in response to config changes"""
         self._comment_char = prefs.comment_char(self.context)
 
-    def validate(self, string, idx):
-        """Scrub whitespace and validate the commit message"""
-        string = string.lstrip()
-        if string.startswith(self._comment_char):
-            state = self.Invalid
-        else:
-            state = self.Acceptable
-        return (state, string, idx)
+    def _update_summary_text(self):
+        """Prevent commit messages from starting with comment characters"""
+        value = self.value()
+        if self._comment_char and value.startswith(self._comment_char):
+            cursor = self.textCursor()
+            position = cursor.position()
+
+            value = value.lstrip()
+            if self._comment_char:
+                value = value.lstrip(self._comment_char).lstrip()
+
+            self.set_value(value, block=True)
+
+            value = self.value()
+            if position > 1:
+                position = max(0, min(position - 1, len(value) - 1))
+                cursor.setPosition(position)
+                self.setTextCursor(cursor)
+
+    def keyPressEvent(self, event):
+        """Allow "Enter" to focus into the extended description field"""
+        event_key = event.key()
+        if event_key in (
+            Qt.Key_Enter,
+            Qt.Key_Return,
+        ):
+            self.accepted.emit()
+            return
+        SpellCheckLineEdit.keyPressEvent(self, event)
 
 
-class CommitSummaryLineEdit(HintedLineEdit):
-
-    cursor = Signal(int, int)
-
-    def __init__(self, context, parent=None):
-        hint = N_('Commit summary')
-        HintedLineEdit.__init__(self, context, hint, parent=parent)
-        self.menu_actions = []
-
-    def build_menu(self):
-        menu = self.createStandardContextMenu()
-        add_menu_actions(menu, self.menu_actions)
-        return menu
-
-    def contextMenuEvent(self, event):
-        menu = self.build_menu()
-        menu.exec_(self.mapToGlobal(event.pos()))
-
-
-# pylint: disable=too-many-ancestors
 class CommitMessageTextEdit(SpellCheckTextEdit):
     leave = Signal()
 
-    def __init__(self, context, parent=None):
+    def __init__(self, context, check=None, parent=None):
         hint = N_('Extended description...')
-        SpellCheckTextEdit.__init__(self, context, hint, parent)
-        self.menu_actions = []
+        SpellCheckTextEdit.__init__(self, context, hint, check=check, parent=parent)
 
         self.action_emit_leave = qtutils.add_action(
             self, 'Shift Tab', self.leave.emit, hotkeys.LEAVE
         )
-
-    def build_menu(self):
-        menu, _ = self.context_menu()
-        add_menu_actions(menu, self.menu_actions)
-        return menu
-
-    def contextMenuEvent(self, event):
-        menu = self.build_menu()
-        menu.exec_(self.mapToGlobal(event.pos()))
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Up:
@@ -635,8 +914,7 @@ class CommitMessageTextEdit(SpellCheckTextEdit):
                 # Otherwise, emit a signal so that the parent can
                 # change focus.
                 if cursor.hasSelection():
-                    cursor.setPosition(0)
-                    self.setTextCursor(cursor)
+                    self.set_cursor_position(0)
                 else:
                     self.leave.emit()
                 event.accept()
@@ -662,10 +940,8 @@ class CommitMessageTextEdit(SpellCheckTextEdit):
             text_after = all_text[position:]
             lines_after = text_after.count('\n')
             if lines_after == 0:
-                if event.modifiers() & Qt.ShiftModifier:
-                    mode = QtGui.QTextCursor.KeepAnchor
-                else:
-                    mode = QtGui.QTextCursor.MoveAnchor
+                select = event.modifiers() & Qt.ShiftModifier
+                mode = anchor_mode(select)
                 cursor.setPosition(len(all_text), mode)
                 self.setTextCursor(cursor)
                 event.accept()
@@ -674,14 +950,5 @@ class CommitMessageTextEdit(SpellCheckTextEdit):
 
     def setFont(self, font):
         SpellCheckTextEdit.setFont(self, font)
-        fm = self.fontMetrics()
-        self.setMinimumSize(QtCore.QSize(fm.width('MMMM'), fm.height() * 2))
-
-
-def add_menu_actions(menu, menu_actions):
-    """Add actions to a menu, treating None as a separator"""
-    for action in menu_actions:
-        if action is None:
-            menu.addSeparator()
-        else:
-            menu.addAction(action)
+        width, height = qtutils.text_size(font, 'MMMM')
+        self.setMinimumSize(QtCore.QSize(width, height * 2))

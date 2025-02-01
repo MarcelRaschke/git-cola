@@ -1,7 +1,4 @@
 """Widgets for manipulating git stashes"""
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-from qtpy import QtCore
 from qtpy.QtCore import Qt
 
 from ..i18n import N_
@@ -12,7 +9,6 @@ from .. import cmds
 from .. import hotkeys
 from .. import icons
 from .. import qtutils
-from .. import utils
 from . import defs
 from . import diff
 from . import standard
@@ -43,6 +39,12 @@ class StashView(standard.Dialog):
 
         self.stash_list = standard.ListWidget(parent=self)
         self.stash_text = diff.DiffTextEdit(context, self)
+
+        self.button_rename = qtutils.create_button(
+            text=N_('Rename'),
+            tooltip=N_('Rename the selected stash'),
+            icon=icons.edit(),
+        )
 
         self.button_apply = qtutils.create_button(
             text=N_('Apply'), tooltip=N_('Apply the selected stash'), icon=icons.ok()
@@ -86,11 +88,12 @@ class StashView(standard.Dialog):
         self.btn_layt = qtutils.hbox(
             defs.no_margin,
             defs.button_spacing,
-            self.button_close,
-            qtutils.STRETCH,
             self.stash_index,
             self.keep_index,
+            qtutils.STRETCH,
+            self.button_close,
             self.button_save,
+            self.button_rename,
             self.button_apply,
             self.button_pop,
             self.button_drop,
@@ -115,20 +118,17 @@ class StashView(standard.Dialog):
             self, N_('Pop'), self.stash_drop, hotkeys.DELETE_FILE
         )
 
-        # pylint: disable=no-member
         self.stash_list.itemSelectionChanged.connect(self.item_selected)
-
         qtutils.connect_button(self.button_save, self.stash_save)
+        qtutils.connect_button(self.button_rename, self.stash_rename)
         qtutils.connect_button(self.button_apply, self.stash_apply)
         qtutils.connect_button(self.button_pop, self.stash_pop)
         qtutils.connect_button(self.button_drop, self.stash_drop)
         qtutils.connect_button(self.button_close, self.close_and_rescan)
-
         qtutils.connect_checkbox(self.stash_index, self.stash_index_clicked)
         qtutils.connect_checkbox(self.keep_index, self.keep_index_clicked)
 
         self.init_size(parent=parent)
-
         self.update_from_model()
         self.update_actions()
 
@@ -178,6 +178,7 @@ class StashView(standard.Dialog):
         self.apply_action.setEnabled(is_selected)
         self.drop_action.setEnabled(is_selected)
         self.pop_action.setEnabled(is_selected)
+        self.button_rename.setEnabled(is_selected)
         self.button_apply.setEnabled(is_selected)
         self.button_drop.setEnabled(is_selected)
         self.button_pop.setEnabled(is_selected)
@@ -203,6 +204,27 @@ class StashView(standard.Dialog):
         if get(self.stash_index) and not is_staged:
             self.stash_index.setChecked(False)
 
+    def stash_rename(self):
+        """Renames the currently selected stash"""
+        selection = self.selected_stash()
+        name = self.selected_name()
+        new_name, ok = qtutils.prompt(
+            N_('Enter a new name for the stash'),
+            text=name,
+            title=N_('Rename Stash'),
+            parent=self,
+        )
+        if not ok or not new_name:
+            return
+        if new_name == name:
+            Interaction.information(
+                N_('No change made'), N_('The stash has not been renamed')
+            )
+            return
+        context = self.context
+        cmds.do(stash.RenameStash, context, selection, new_name)
+        self.update_from_model()
+
     def stash_pop(self):
         self.stash_apply(pop=True)
 
@@ -214,7 +236,7 @@ class StashView(standard.Dialog):
         context = self.context
         index = get(self.keep_index)
         cmds.do(stash.ApplyStash, context, selection, index, pop)
-        QtCore.QTimer.singleShot(1, self.accept)
+        self.update_from_model()
 
     def stash_save(self):
         """Saves the worktree in a stash
@@ -228,14 +250,6 @@ class StashView(standard.Dialog):
         )
         if not ok or not stash_name:
             return
-        # Sanitize the stash name
-        stash_name = utils.sanitize(stash_name)
-        if stash_name in self.names:
-            Interaction.critical(
-                N_('Error: Stash exists'),
-                N_('A stash named "%s" already exists') % stash_name,
-            )
-            return
         context = self.context
         keep_index = get(self.keep_index)
         stash_index = get(self.stash_index)
@@ -243,7 +257,7 @@ class StashView(standard.Dialog):
             cmds.do(stash.StashIndex, context, stash_name)
         else:
             cmds.do(stash.SaveStash, context, stash_name, keep_index)
-        QtCore.QTimer.singleShot(1, self.accept)
+        self.update_from_model()
 
     def stash_drop(self):
         """Drops the currently selected stash"""
@@ -266,7 +280,7 @@ class StashView(standard.Dialog):
 
     def export_state(self):
         """Export persistent settings"""
-        state = super(StashView, self).export_state()
+        state = super().export_state()
         state['keep_index'] = get(self.keep_index)
         state['stash_index'] = get(self.stash_index)
         state['sizes'] = get(self.splitter)
@@ -274,7 +288,7 @@ class StashView(standard.Dialog):
 
     def apply_state(self, state):
         """Apply persistent settings"""
-        result = super(StashView, self).apply_state(state)
+        result = super().apply_state(state)
         keep_index = bool(state.get('keep_index', True))
         stash_index = bool(state.get('stash_index', False))
         self.keep_index.setChecked(keep_index)

@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import time
 
 from qtpy import QtGui
@@ -14,7 +13,7 @@ from ..git import STDOUT
 from ..i18n import N_
 
 
-class Columns(object):
+class Columns:
     """Defines columns in the worktree browser"""
 
     NAME = 0
@@ -80,19 +79,17 @@ class GitRepoModel(QtGui.QStandardItemModel):
         self.dir_icon = icons.directory()
 
     def mimeData(self, indexes):
-        context = self.context
         paths = qtutils.paths_from_indexes(
             self, indexes, item_type=GitRepoNameItem.TYPE
         )
-        return qtutils.mimedata_from_paths(context, paths)
+        return qtutils.mimedata_from_paths(self.context, paths)
 
-    # pylint: disable=no-self-use
     def mimeTypes(self):
         return qtutils.path_mimetypes()
 
     def clear(self):
         self.entries.clear()
-        super(GitRepoModel, self).clear()
+        super().clear()
 
     def hasChildren(self, index):
         if index.isValid():
@@ -382,7 +379,7 @@ class GitRepoItem(QtGui.QStandardItem):
 class GitRepoNameItem(GitRepoItem):
     """Subclass GitRepoItem to provide a custom type()."""
 
-    TYPE = QtGui.QStandardItem.ItemType(QtGui.QStandardItem.UserType + 1)
+    TYPE = qtutils.standard_item_type_value(1)
 
     def __init__(self, path, is_dir):
         GitRepoItem.__init__(self, path)

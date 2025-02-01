@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
 
@@ -35,7 +33,7 @@ def create_tag(context, name='', ref='', sign=False):
     return view
 
 
-class TagOptions(object):
+class TagOptions:
     """Simple data container for the CreateTag dialog."""
 
     def __init__(self, name, ref, sign):
@@ -85,7 +83,7 @@ class CreateTag(standard.Dialog):
 
         self.revision = completion.GitRefLineEdit(context)
         self.revision.setText(self.opts.ref)
-        self.revision.setToolTip(N_('Specifies the SHA-1 to tag'))
+        self.revision.setToolTip(N_('Specifies the commit to tag'))
         # Buttons
         self.create_button = qtutils.create_button(
             text=N_('Create Tag'), icon=icons.tag(), default=True
@@ -105,8 +103,8 @@ class CreateTag(standard.Dialog):
         self.button_layout = qtutils.hbox(
             defs.no_margin,
             defs.button_spacing,
-            self.close_button,
             qtutils.STRETCH,
+            self.close_button,
             self.create_button,
         )
 

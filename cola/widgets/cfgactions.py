@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 
 from qtpy import QtCore
@@ -92,7 +91,6 @@ class GitCommandWidget(standard.Dialog):
         )
 
         # Connect the signals to the process
-        # pylint: disable=no-member
         self.proc.readyReadStandardOutput.connect(self.read_stdout)
         self.proc.readyReadStandardError.connect(self.read_stderr)
         self.proc.finished.connect(self.proc_finished)
@@ -123,8 +121,8 @@ class GitCommandWidget(standard.Dialog):
         text = self.read_stream(self.proc.readAllStandardError)
         self.err += text
 
-    def read_stream(self, fn):
-        data = fn().data()
+    def read_stream(self, func):
+        data = func().data()
         text = core.decode(data)
         self.append_text(text)
         return text
@@ -177,7 +175,6 @@ class GitCommandWidget(standard.Dialog):
 
 
 class ActionDialog(standard.Dialog):
-
     VALUES = {}
 
     def __init__(self, context, parent, name, opts):
@@ -263,7 +260,6 @@ class ActionDialog(standard.Dialog):
         )
         self.setLayout(self.layt)
 
-        # pylint: disable=no-member
         self.argstxt.textChanged.connect(self._argstxt_changed)
         qtutils.connect_button(self.closebtn, self.reject)
         qtutils.connect_button(self.runbtn, self.accept)
@@ -323,8 +319,6 @@ class RevisionSelector(QtWidgets.QWidget):
             self._rev_list,
         )
         self.setLayout(self._layt)
-
-        # pylint: disable=no-member
         self._rev_list.itemSelectionChanged.connect(self.selection_changed)
 
     def revision(self):

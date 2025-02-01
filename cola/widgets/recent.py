@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
@@ -86,10 +84,10 @@ class RecentFiles(standard.Dialog):
         self.button_layout = qtutils.hbox(
             defs.no_margin,
             defs.spacing,
-            self.close_button,
-            qtutils.STRETCH,
             self.expand_button,
             self.collapse_button,
+            qtutils.STRETCH,
+            self.close_button,
             self.edit_button,
         )
 
@@ -98,7 +96,6 @@ class RecentFiles(standard.Dialog):
         )
         self.setLayout(self.main_layout)
 
-        # pylint: disable=no-member
         self.tree.selection_changed.connect(self.tree_selection_changed)
         self.tree.path_chosen.connect(self.edit_file)
         self.count.valueChanged.connect(self.count_changed)

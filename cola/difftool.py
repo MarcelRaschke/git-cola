@@ -1,41 +1,61 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
+import os
 
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
 
 from . import cmds
+from . import core
 from . import gitcmds
 from . import hotkeys
 from . import icons
 from . import qtutils
 from . import utils
+from .git import EMPTY_TREE_OID
 from .i18n import N_
+from .interaction import Interaction
+from .models import dag
 from .widgets import completion
 from .widgets import defs
 from .widgets import filetree
 from .widgets import standard
 
 
-def diff_commits(context, parent, a, b):
-    """Show a dialog for diffing two commits"""
-    dlg = Difftool(context, parent, a=a, b=b)
-    dlg.show()
-    dlg.raise_()
-    return dlg.exec_() == QtWidgets.QDialog.Accepted
+class LaunchDifftool(cmds.ContextCommand):
+    """Launch "git difftool" with the currently selected files"""
 
+    @staticmethod
+    def name():
+        return N_('Launch Diff Tool')
 
-def diff_expression(
-    context, parent, expr, create_widget=False, hide_expr=False, focus_tree=False
-):
-    """Show a diff dialog for diff expressions"""
-    dlg = Difftool(
-        context, parent, expr=expr, hide_expr=hide_expr, focus_tree=focus_tree
-    )
-    if create_widget:
-        return dlg
-    dlg.show()
-    dlg.raise_()
-    return dlg.exec_() == QtWidgets.QDialog.Accepted
+    def do(self):
+        s = self.selection.selection()
+        if s.unmerged:
+            paths = s.unmerged
+            if utils.is_win32():
+                core.fork(['git', 'mergetool', '--no-prompt', '--'] + paths)
+            else:
+                cfg = self.cfg
+                cmd = cfg.terminal()
+                argv = utils.shell_split(cmd)
+
+                terminal = os.path.basename(argv[0])
+                shellquote_terms = {'xfce4-terminal'}
+                shellquote_default = terminal in shellquote_terms
+
+                mergetool = ['git', 'mergetool', '--no-prompt', '--']
+                mergetool.extend(paths)
+                needs_shellquote = cfg.get(
+                    'cola.terminalshellquote', shellquote_default
+                )
+
+                if needs_shellquote:
+                    argv.append(core.list2cmdline(mergetool))
+                else:
+                    argv.extend(mergetool)
+
+                core.fork(argv)
+        else:
+            difftool_run(self.context)
 
 
 class Difftool(standard.Dialog):
@@ -90,8 +110,8 @@ class Difftool(standard.Dialog):
         self.button_layout = qtutils.hbox(
             defs.no_margin,
             defs.spacing,
-            self.close_button,
             qtutils.STRETCH,
+            self.close_button,
             self.edit_button,
             self.diff_all_button,
             self.diff_button,
@@ -102,7 +122,6 @@ class Difftool(standard.Dialog):
         )
         self.setLayout(self.main_layout)
 
-        # pylint: disable=no-member
         self.tree.itemSelectionChanged.connect(self.tree_selection_changed)
         self.tree.itemDoubleClicked.connect(self.tree_double_clicked)
         self.tree.up.connect(self.focus_input)
@@ -158,7 +177,22 @@ class Difftool(standard.Dialog):
         elif self.b is None:
             self.diff_arg = [self.a]
         else:
-            self.diff_arg = [self.a, self.b]
+            if self.b == dag.WORKTREE:
+                if self.a == dag.STAGE:
+                    self.diff_arg = []
+                else:
+                    self.diff_arg = [self.a]
+            elif self.b == dag.STAGE:
+                if self.a == dag.WORKTREE:
+                    self.diff_arg = ['--cached']
+                else:
+                    self.diff_arg = ['--cached', self.a]
+            elif self.a == dag.WORKTREE:
+                self.diff_arg = [self.b]
+            elif self.a == dag.STAGE:
+                self.diff_arg = ['--cached', self.b]
+            else:
+                self.diff_arg = [self.a, self.b]
         self.refresh_filenames()
 
     def refresh_filenames(self):
@@ -177,12 +211,12 @@ class Difftool(standard.Dialog):
     def tree_double_clicked(self, item, _column):
         path = filetree.filename_from_item(item)
         left, right = self._left_right_args()
-        cmds.difftool_launch(self.context, left=left, right=right, paths=[path])
+        difftool_launch(self.context, left=left, right=right, paths=[path])
 
     def diff(self, dir_diff=False):
         paths = self.tree.selected_filenames()
         left, right = self._left_right_args()
-        cmds.difftool_launch(
+        difftool_launch(
             self.context, left=left, right=right, paths=paths, dir_diff=dir_diff
         )
 
@@ -200,3 +234,117 @@ class Difftool(standard.Dialog):
     def edit(self):
         paths = self.tree.selected_filenames()
         cmds.do(cmds.Edit, self.context, paths)
+
+
+def diff_commits(context, parent, a, b):
+    """Show a dialog for diffing two commits"""
+    dlg = Difftool(context, parent, a=a, b=b)
+    dlg.show()
+    dlg.raise_()
+    return dlg.exec_() == QtWidgets.QDialog.Accepted
+
+
+def diff_expression(
+    context, parent, expr, create_widget=False, hide_expr=False, focus_tree=False
+):
+    """Show a diff dialog for diff expressions"""
+    dlg = Difftool(
+        context, parent, expr=expr, hide_expr=hide_expr, focus_tree=focus_tree
+    )
+    if create_widget:
+        return dlg
+    dlg.show()
+    dlg.raise_()
+    return dlg.exec_() == QtWidgets.QDialog.Accepted
+
+
+def difftool_run(context):
+    """Start a default difftool session"""
+    selection = context.selection
+    files = selection.group()
+    if not files:
+        return
+    s = selection.selection()
+    head = context.model.head
+    difftool_launch_with_head(context, files, bool(s.staged), head)
+
+
+def difftool_launch_with_head(context, filenames, staged, head):
+    """Launch difftool against the provided head"""
+    if head == 'HEAD':
+        left = None
+    else:
+        left = head
+    difftool_launch(context, left=left, staged=staged, paths=filenames)
+
+
+def difftool_launch(
+    context,
+    left=None,
+    right=None,
+    paths=None,
+    staged=False,
+    dir_diff=False,
+    left_take_magic=False,
+    left_take_parent=False,
+):
+    """Launches 'git difftool' with given parameters
+
+    :param left: first argument to difftool
+    :param right: second argument to difftool_args
+    :param paths: paths to diff
+    :param staged: activate `git difftool --staged`
+    :param dir_diff: activate `git difftool --dir-diff`
+    :param left_take_magic: whether to append the magic "^!" diff expression
+    :param left_take_parent: whether to append the first-parent ~ for diffing
+
+    """
+    difftool_args = ['git', 'difftool', '--no-prompt']
+    if staged:
+        difftool_args.append('--cached')
+    if dir_diff:
+        difftool_args.append('--dir-diff')
+
+    if left:
+        original_left = left
+        if left_take_parent or left_take_magic:
+            suffix = '^!' if left_take_magic else '~'
+            # Check root commit (no parents and thus cannot execute '~')
+            git = context.git
+            if left in (dag.STAGE, dag.WORKTREE):
+                check_ref = 'HEAD'
+            else:
+                check_ref = left
+            status, out, err = git.rev_list(
+                check_ref, parents=True, n=1, _readonly=True
+            )
+            Interaction.log_status(status, out, err)
+            if status:
+                raise OSError(f'git rev-list {left} command failed')
+
+            if len(out.split()) >= 2:
+                # Commit has a parent, so we can take its child as requested
+                if left not in (dag.STAGE, dag.WORKTREE):
+                    left += suffix
+            else:
+                # No parent, assume it's the root commit, so we have to diff
+                # against the empty tree.
+                left = EMPTY_TREE_OID
+                if not right and left_take_magic:
+                    right = left
+        # Commit has a parent, so we can take its child as requested
+        if original_left not in (dag.STAGE, dag.WORKTREE):
+            difftool_args.append(left)
+
+    if right and right not in (dag.STAGE, dag.WORKTREE):
+        difftool_args.append(right)
+
+    if paths:
+        difftool_args.append('--')
+        difftool_args.extend(paths)
+
+    runtask = context.runtask
+    if runtask:
+        Interaction.async_command(N_('Difftool'), difftool_args, runtask)
+    else:
+        core.fork(difftool_args)

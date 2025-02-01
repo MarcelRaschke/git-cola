@@ -1,39 +1,52 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import sys
 
 from qtpy import QtCore
 from qtpy.QtCore import Signal
 
 from .. import core
+from .. import git
 from .. import hidpi
 from .. import utils
 from ..cmd import Command
 
 
+ABBREV = 'core.abbrev'
 AUTOCOMPLETE_PATHS = 'cola.autocompletepaths'
+AUTODETECT_PROXY = 'cola.autodetectproxy'
 AUTOTEMPLATE = 'cola.autoloadcommittemplate'
 BACKGROUND_EDITOR = 'cola.backgroundeditor'
 BLAME_VIEWER = 'cola.blameviewer'
+BLOCK_CURSOR = 'cola.blockcursor'
 BOLD_HEADERS = 'cola.boldheaders'
 CHECK_CONFLICTS = 'cola.checkconflicts'
 CHECK_PUBLISHED_COMMITS = 'cola.checkpublishedcommits'
 COMMENT_CHAR = 'core.commentchar'
+COMMIT_CLEANUP = 'commit.cleanup'
 DIFFCONTEXT = 'gui.diffcontext'
 DIFFTOOL = 'diff.tool'
 DISPLAY_UNTRACKED = 'gui.displayuntracked'
 EDITOR = 'gui.editor'
+ENABLE_GRAVATAR = 'cola.gravatar'
 EXPANDTAB = 'cola.expandtab'
 FONTDIFF = 'cola.fontdiff'
 HIDPI = 'cola.hidpi'
 HISTORY_BROWSER = 'gui.historybrowser'
+HTTP_PROXY = 'http.proxy'
 ICON_THEME = 'cola.icontheme'
+INOTIFY = 'cola.inotify'
+NOTIFY_ON_PUSH = 'cola.notifyonpush'
 LINEBREAK = 'cola.linebreak'
+LOGDATE = 'cola.logdate'
 MAXRECENT = 'cola.maxrecent'
 MERGE_DIFFSTAT = 'merge.diffstat'
 MERGE_KEEPBACKUP = 'merge.keepbackup'
 MERGE_SUMMARY = 'merge.summary'
 MERGE_VERBOSITY = 'merge.verbosity'
 MERGETOOL = 'merge.tool'
+MOUSE_ZOOM = 'cola.mousezoom'
+PATCHES_DIRECTORY = 'cola.patchesdirectory'
+REBASE_UPDATE_REFS = 'rebase.updaterefs'
+REFRESH_ON_FOCUS = 'cola.refreshonfocus'
 RESIZE_BROWSER_COLUMNS = 'cola.resizebrowsercolumns'
 SAFE_MODE = 'cola.safemode'
 SAVEWINDOWSETTINGS = 'cola.savewindowsettings'
@@ -47,25 +60,74 @@ TABWIDTH = 'cola.tabwidth'
 TEXTWIDTH = 'cola.textwidth'
 USER_EMAIL = 'user.email'
 USER_NAME = 'user.name'
+UPDATE_INDEX = 'cola.updateindex'
 
 
-class Defaults(object):
+class DateFormat:
+    DEFAULT = 'default'
+    RELATIVE = 'relative'
+    LOCAL = 'local'
+    ISO = 'iso8601'
+    ISO_STRICT = 'iso8601-strict'
+    RFC = 'rfc2822'
+    SHORT = 'short'
+    RAW = 'raw'
+    HUMAN = 'human'
+    UNIX = 'unix'
+
+
+def date_formats():
+    """Return valid values for git config cola.logdate"""
+    return [
+        DateFormat.DEFAULT,
+        DateFormat.RELATIVE,
+        DateFormat.LOCAL,
+        DateFormat.ISO,
+        DateFormat.ISO_STRICT,
+        DateFormat.RFC,
+        DateFormat.SHORT,
+        DateFormat.RAW,
+        DateFormat.HUMAN,
+        DateFormat.UNIX,
+    ]
+
+
+def commit_cleanup_modes():
+    """Return valid values for the git config commit.cleanup"""
+    return [
+        'default',
+        'whitespace',
+        'strip',
+        'scissors',
+        'verbatim',
+    ]
+
+
+class Defaults:
     """Read-only class for holding defaults that get overridden"""
 
     # These should match Git's defaults for git-defined values.
+    abbrev = 12
     autotemplate = False
+    autodetect_proxy = True
     blame_viewer = 'git gui blame'
+    block_cursor = True
     bold_headers = False
     check_conflicts = True
     check_published_commits = True
     comment_char = '#'
+    commit_cleanup = 'default'
     display_untracked = True
     diff_context = 5
     difftool = 'xxdiff'
     editor = 'gvim'
+    enable_gravatar = True
     expandtab = False
     history_browser = 'gitk'
+    http_proxy = ''
     icon_theme = 'default'
+    inotify = True
+    notifyonpush = False
     linebreak = True
     maxrecent = 8
     mergetool = difftool
@@ -73,6 +135,9 @@ class Defaults(object):
     merge_keep_backup = True
     merge_summary = True
     merge_verbosity = 2
+    mouse_zoom = True
+    rebase_update_refs = False
+    refresh_on_focus = False
     resize_browser_columns = False
     save_window_settings = True
     safe_mode = False
@@ -84,14 +149,41 @@ class Defaults(object):
     textwidth = 72
     theme = 'default'
     hidpi = hidpi.Option.AUTO
+    patches_directory = 'patches'
     status_indent = False
     status_show_totals = False
+    logdate = DateFormat.DEFAULT
+    update_index = True
+
+
+def abbrev(context):
+    """Return the configured length for shortening commit IDs"""
+    default = Defaults.abbrev
+    value = context.cfg.get(ABBREV, default=default)
+    if value == 'no':
+        result = git.OID_LENGTH_SHA256
+    else:
+        try:
+            result = max(4, int(value))
+        except ValueError:
+            result = default
+    return result
+
+
+def autodetect_proxy(context):
+    """Return True when proxy settings should be automatically configured"""
+    return context.cfg.get(AUTODETECT_PROXY, default=Defaults.autodetect_proxy)
 
 
 def blame_viewer(context):
     """Return the configured "blame" viewer"""
     default = Defaults.blame_viewer
     return context.cfg.get(BLAME_VIEWER, default=default)
+
+
+def block_cursor(context):
+    """Should we display a block cursor in diff editors?"""
+    return context.cfg.get(BLOCK_CURSOR, default=Defaults.block_cursor)
 
 
 def bold_headers(context):
@@ -118,7 +210,7 @@ def display_untracked(context):
 
 def editor(context):
     """Return the configured editor"""
-    app = context.cfg.get(EDITOR, default=Defaults.editor)
+    app = context.cfg.get(EDITOR, default=fallback_editor())
     return _remap_editor(app)
 
 
@@ -128,15 +220,49 @@ def background_editor(context):
     return _remap_editor(app)
 
 
+def fallback_editor():
+    """Return a fallback editor for cases where one is not configured
+
+    GIT_VISUAL and VISUAL are consulted before GIT_EDITOR and EDITOR to allow
+    configuring a visual editor for Git Cola using $GIT_VISUAL and an alternative
+    editor for the Git CLI.
+    """
+    editor_variables = (
+        'GIT_VISUAL',
+        'VISUAL',
+        'GIT_EDITOR',
+        'EDITOR',
+    )
+    for env in editor_variables:
+        env_editor = core.getenv(env)
+        if env_editor:
+            return env_editor
+
+    return Defaults.editor
+
+
 def _remap_editor(app):
-    """Remap a configured editorinto a visual editor name"""
-    # We do this for vim users because this configuration is convenient.
-    return {'vim': 'gvim -f'}.get(app, app)
+    """Remap a configured editor into a visual editor name"""
+    # We do this for vim users because this configuration is convenient for new users.
+    return {
+        'vim': 'gvim -f',
+        'nvim': 'nvim-qt --nofork',
+    }.get(app, app)
 
 
 def comment_char(context):
     """Return the configured git commit comment character"""
     return context.cfg.get(COMMENT_CHAR, default=Defaults.comment_char)
+
+
+def commit_cleanup(context):
+    """Return the configured git commit cleanup mode"""
+    return context.cfg.get(COMMIT_CLEANUP, default=Defaults.commit_cleanup)
+
+
+def enable_gravatar(context):
+    """Is gravatar enabled?"""
+    return context.cfg.get(ENABLE_GRAVATAR, default=Defaults.enable_gravatar)
 
 
 def default_history_browser():
@@ -163,9 +289,25 @@ def history_browser(context):
     return context.cfg.get(HISTORY_BROWSER, default=default)
 
 
+def http_proxy(context):
+    """Return the configured http proxy"""
+    return context.cfg.get(HTTP_PROXY, default=Defaults.http_proxy)
+
+
+def notify_on_push(context):
+    """Return whether to notify upon push or not"""
+    default = Defaults.notifyonpush
+    return context.cfg.get(NOTIFY_ON_PUSH, default=default)
+
+
 def linebreak(context):
     """Should we word-wrap lines in the commit message editor?"""
     return context.cfg.get(LINEBREAK, default=Defaults.linebreak)
+
+
+def logdate(context):
+    """Return the configured log date format"""
+    return context.cfg.get(LOGDATE, default=Defaults.logdate)
 
 
 def maxrecent(context):
@@ -176,6 +318,11 @@ def maxrecent(context):
     return value
 
 
+def mouse_zoom(context):
+    """Should we zoom text when using Ctrl + MouseWheel scroll"""
+    return context.cfg.get(MOUSE_ZOOM, default=Defaults.mouse_zoom)
+
+
 def spellcheck(context):
     """Should we spellcheck commit messages?"""
     return context.cfg.get(SPELL_CHECK, default=Defaults.spellcheck)
@@ -184,6 +331,11 @@ def spellcheck(context):
 def expandtab(context):
     """Should we expand tabs in commit messages?"""
     return context.cfg.get(EXPANDTAB, default=Defaults.expandtab)
+
+
+def patches_directory(context):
+    """Return the patches output directory"""
+    return context.cfg.get(PATCHES_DIRECTORY, default=Defaults.patches_directory)
 
 
 def sort_bookmarks(context):
@@ -214,16 +366,16 @@ def status_show_totals(context):
 class PreferencesModel(QtCore.QObject):
     """Interact with repo-local and user-global git config preferences"""
 
-    config_updated = Signal(str, str, str)
+    config_updated = Signal(str, str, object)
 
     def __init__(self, context):
-        super(PreferencesModel, self).__init__()
+        super().__init__()
         self.context = context
         self.config = context.cfg
 
     def set_config(self, source, config, value):
         """Set a configuration value"""
-        if source == 'repo':
+        if source == 'local':
             self.config.set_repo(config, value)
         else:
             self.config.set_user(config, value)
@@ -231,7 +383,7 @@ class PreferencesModel(QtCore.QObject):
 
     def get_config(self, source, config):
         """Get a configured value"""
-        if source == 'repo':
+        if source == 'local':
             value = self.config.get_repo(config)
         else:
             value = self.config.get(config)

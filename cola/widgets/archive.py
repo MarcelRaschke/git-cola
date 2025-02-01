@@ -1,5 +1,4 @@
 """Git Archive dialog"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 
 from qtpy import QtCore
@@ -20,7 +19,6 @@ from . import defs
 
 
 class ExpandableGroupBox(QtWidgets.QGroupBox):
-
     expanded = Signal(bool)
 
     def __init__(self, parent=None):
@@ -105,7 +103,7 @@ class Archive(Dialog):
         # outputs
         self.fmt = None
 
-        filename = '%s-%s' % (os.path.basename(core.getcwd()), shortref)
+        filename = f'{os.path.basename(core.getcwd())}-{shortref}'
         self.prefix = filename + '/'
         self.filename = filename
 
@@ -147,8 +145,8 @@ class Archive(Dialog):
         self.btnlayt = qtutils.hbox(
             defs.no_margin,
             defs.spacing,
-            self.close_button,
             qtutils.STRETCH,
+            self.close_button,
             self.save_button,
         )
 
@@ -174,7 +172,6 @@ class Archive(Dialog):
         self.update_format(idx)
 
         # connections
-        # pylint: disable=no-member
         self.filetext.textChanged.connect(self.filetext_changed)
         self.prefix_text.textChanged.connect(self.prefix_text_changed)
         self.format_combo.currentIndexChanged.connect(self.update_format)
@@ -240,7 +237,7 @@ class Archive(Dialog):
     def update_format(self, idx):
         self.fmt = self.format_strings[idx]
         text = self.strip_exts(self.filetext.text())
-        self.filename = '%s.%s' % (text, self.fmt)
+        self.filename = f'{text}.{self.fmt}'
         self.filetext.setText(self.filename)
         self.filetext.setFocus()
         if '/' in text:

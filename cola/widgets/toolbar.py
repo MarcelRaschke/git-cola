@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 from functools import partial
 
 from qtpy import QtGui
@@ -6,15 +5,17 @@ from qtpy.QtCore import Qt
 from qtpy import QtWidgets
 
 from ..i18n import N_
-from ..widgets import standard
 from .. import icons
 from .. import qtutils
-from .toolbarcmds import COMMANDS
 from . import defs
+from . import standard
+from .toolbarcmds import COMMANDS
+
 
 TREE_LAYOUT = {
     'Others': ['Others::LaunchEditor', 'Others::RevertUnstagedEdits'],
     'File': [
+        'File::QuickOpen',
         'File::NewRepo',
         'File::OpenRepo',
         'File::OpenRepoNewWindow',
@@ -42,7 +43,8 @@ TREE_LAYOUT = {
         'Commit::Stage',
         'Commit::AmendLast',
         'Commit::UndoLastCommit',
-        'Commit::StageAll',
+        'Commit::StageModified',
+        'Commit::StageUntracked',
         'Commit::UnstageAll',
         'Commit::Unstage',
         'Commit::LoadCommitMessage',
@@ -73,6 +75,12 @@ TREE_LAYOUT = {
     'View': ['View::DAG', 'View::FileBrowser'],
 }
 
+# Backwards-compatibility: Commit::StageUntracked was previously
+# exposed as Commit::StageUntracked.
+RENAMED = {
+    'Commit::StageAll': 'Commit::StageUntracked',
+}
+
 
 def configure(toolbar, parent=None):
     """Launches the Toolbar configure dialog"""
@@ -95,7 +103,7 @@ def add_toolbar(context, widget):
     configure(toolbar)
 
 
-class ToolBarState(object):
+class ToolBarState:
     """export_state() and apply_state() providers for toolbars"""
 
     def __init__(self, context, widget):
@@ -131,8 +139,6 @@ class ToolBarState(object):
             if data['float']:
                 toolbar.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
                 toolbar.move(data['x'], data['y'])
-            # TODO: handle changed width when exists more than one toolbar in
-            # an area
 
     def export_state(self):
         result = []
@@ -144,24 +150,22 @@ class ToolBarState(object):
             if toolbar_area == Qt.NoToolBarArea:
                 continue  # filter out removed toolbars
             items = [x.data() for x in toolbar.actions()]
-
-            result.append(
-                {
-                    'name': toolbar.windowTitle(),
-                    'area': encode_toolbar_area(toolbar_area),
-                    'break': widget.toolBarBreak(toolbar),
-                    'float': toolbar.isFloating(),
-                    'x': toolbar.pos().x(),
-                    'y': toolbar.pos().y(),
-                    'width': toolbar.width(),
-                    'height': toolbar.height(),
-                    # show_icons kept for backwards compatibility in git-cola <= 3.11.0
-                    'show_icons': toolbar.toolbar_style() != ToolBar.STYLE_TEXT_ONLY,
-                    'toolbar_style': toolbar.toolbar_style(),
-                    'visible': toolbar.isVisible(),
-                    'items': items,
-                }
-            )
+            # show_icons is for backwards compatibility with git-cola <= 3.11.0
+            show_icons = toolbar.toolbar_style() != ToolBar.STYLE_TEXT_ONLY
+            result.append({
+                'name': toolbar.windowTitle(),
+                'area': encode_toolbar_area(toolbar_area),
+                'break': widget.toolBarBreak(toolbar),
+                'float': toolbar.isFloating(),
+                'x': toolbar.pos().x(),
+                'y': toolbar.pos().y(),
+                'width': toolbar.width(),
+                'height': toolbar.height(),
+                'show_icons': show_icons,
+                'toolbar_style': toolbar.toolbar_style(),
+                'visible': toolbar.isVisible(),
+                'items': items,
+            })
 
         return result
 
@@ -231,6 +235,7 @@ class ToolBar(QtWidgets.QToolBar):
     def add_action_from_data(self, data):
         parent = data['parent']
         child = data['child']
+        child = RENAMED.get(child, child)
 
         if child == self.SEPARATOR:
             toolbar_action = self.addSeparator()
@@ -243,6 +248,7 @@ class ToolBar(QtWidgets.QToolBar):
             title = N_(command['title'])
             callback = partial(command['action'], self.context)
 
+            tooltip = command.get('tooltip', None)
             icon = None
             command_icon = command.get('icon', None)
             if command_icon:
@@ -258,7 +264,7 @@ class ToolBar(QtWidgets.QToolBar):
 
             tooltip = command.get('tooltip', None)
             if tooltip:
-                toolbar_action.setToolTip('%s\n%s' % (title, tooltip))
+                toolbar_action.setToolTip(f'{title}\n{tooltip}')
 
     def delete_toolbar(self):
         self.parent().removeToolBar(self)
@@ -368,28 +374,33 @@ class ToolbarView(standard.Dialog):
         commands = self.toolbar.commands
         for action in self.toolbar.actions():
             data = action.data()
-            if data['child'] == self.toolbar.SEPARATOR:
+            try:
+                command_name = data['child']
+            except KeyError:
+                continue
+            command_name = RENAMED.get(command_name, command_name)
+            if command_name == self.toolbar.SEPARATOR:
                 self.add_separator_action()
-            else:
-                try:
-                    child_data = data['child']
-                    command = commands[child_data]
-                except KeyError:
-                    pass
-                title = command['title']
-                icon = command.get('icon', None)
-                tooltip = command.get('tooltip', None)
-                self.right_list.add_item(title, tooltip, data, icon)
+                continue
+            try:
+                command = commands[command_name]
+            except KeyError:
+                continue
+            title = command['title']
+            icon = command.get('icon', None)
+            tooltip = command.get('tooltip', None)
+            self.right_list.add_item(title, tooltip, data, icon)
 
     def load_left_items(self):
         commands = self.toolbar.commands
         for parent in self.toolbar.tree_layout:
             top = self.left_list.insert_top(parent)
             for item in self.toolbar.tree_layout[parent]:
+                item = RENAMED.get(item, item)
                 try:
                     command = commands[item]
                 except KeyError:
-                    pass
+                    continue
                 icon = command.get('icon', None)
                 tooltip = command.get('tooltip', None)
                 child = create_child(parent, item, command['title'], tooltip, icon)
@@ -428,7 +439,7 @@ def get_index_from_style(style):
     return ToolBar.STYLE_SYMBOLS.index(style)
 
 
-class DraggableListMixin(object):
+class DraggableListMixin:
     items = []
 
     def __init__(self, widget, Base):
@@ -465,7 +476,6 @@ class DraggableListMixin(object):
         return items
 
 
-# pylint: disable=too-many-ancestors
 class DraggableListWidget(QtWidgets.QListWidget):
     Mixin = DraggableListMixin
 
@@ -512,7 +522,6 @@ class DraggableListWidget(QtWidgets.QListWidget):
         return self._mixin.get_items()
 
 
-# pylint: disable=too-many-ancestors
 class ToolbarTreeWidget(standard.TreeView):
     def __init__(self, parent):
         standard.TreeView.__init__(self, parent)

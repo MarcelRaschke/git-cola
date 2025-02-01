@@ -1,12 +1,11 @@
 """Test the cola.gitcfg module."""
-# pylint: disable=redefined-outer-name
-from __future__ import absolute_import, division, print_function, unicode_literals
+import pathlib
 
 from . import helper
 from .helper import app_context
 
 
-# These assertions make flake8 happy. It considers them unused imports otherwise.
+# Prevent unused imports lint errors.
 assert app_context is not None
 
 
@@ -136,14 +135,16 @@ def test_hooks_lowercase(app_context):
 
 
 def test_hooks_path(app_context):
-    helper.run_git('config', 'core.hooksPath', '/test/hooks')
-    expect = '/test/hooks/example'
+    helper.run_git('config', 'core.hooksPath', str(pathlib.Path('/test/hooks')))
+    expect = str(pathlib.Path('/test/hooks/example'))
     actual = app_context.cfg.hooks_path('example')
     assert expect == actual
 
 
 def test_hooks_path_lowercase(app_context):
-    helper.run_git('config', 'core.hookspath', '/test/hooks-lowercase')
-    expect = '/test/hooks-lowercase/example'
+    helper.run_git(
+        'config', 'core.hookspath', str(pathlib.Path('/test/hooks-lowercase'))
+    )
+    expect = str(pathlib.Path('/test/hooks-lowercase/example'))
     actual = app_context.cfg.hooks_path('example')
     assert expect == actual

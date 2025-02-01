@@ -1,28 +1,30 @@
 """Provides the main() routine and ColaApplication"""
-# pylint: disable=unused-import
-from __future__ import absolute_import, division, print_function, unicode_literals
 from functools import partial
 import argparse
 import os
+import random
 import signal
 import sys
 import time
 
-__copyright__ = """
-Copyright (C) 2007-2017 David Aguilar and contributors
-"""
-
 try:
     from qtpy import QtCore
-except ImportError:
+except ImportError as error:
     sys.stderr.write(
         """
-You do not seem to have PyQt5, PySide, or PyQt4 installed.
-Please install it before using git-cola, e.g. on a Debian/Ubutnu system:
+Your Python environment does not have qtpy and PyQt (or PySide).
+The following error was encountered when importing "qtpy":
 
-    sudo apt-get install python-pyqt5 python-pyqt5.qtwebkit
+    ImportError: {err}
 
-"""
+Install qtpy and PyQt (or PySide) into your Python environment.
+On a Debian/Ubuntu system you can install these modules using apt:
+
+    sudo apt install python3-pyqt5 python3-pyqt5.qtwebengine python3-qtpy
+
+""".format(
+            err=error
+        )
     )
     sys.exit(1)
 
@@ -68,6 +70,7 @@ from . import version
 def setup_environment():
     """Set environment variables to control git's behavior"""
     # Allow Ctrl-C to exit
+    random.seed(hash(time.time()))
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     # Session management wants an absolute path when restarting
@@ -139,22 +142,6 @@ def setup_environment():
     # have a chance to explain our merges.
     compat.setenv('GIT_MERGE_AUTOEDIT', 'no')
 
-    # Gnome3 on Debian has XDG_SESSION_TYPE=wayland and
-    # XDG_CURRENT_DESKTOP=GNOME, which Qt warns about at startup:
-    #
-    #   Warning: Ignoring XDG_SESSION_TYPE=wayland on Gnome.
-    #   Use QT_QPA_PLATFORM=wayland to run on Wayland anyway.
-    #
-    # This annoying, so we silence the warning.
-    # We'll need to keep this hack here until a future version of Qt provides
-    # Qt Wayland widgets that are usable in gnome-shell.
-    # Cf. https://bugreports.qt.io/browse/QTBUG-68619
-    if (
-        core.getenv('XDG_CURRENT_DESKTOP', '') == 'GNOME'
-        and core.getenv('XDG_SESSION_TYPE', '') == 'wayland'
-    ):
-        compat.unsetenv('XDG_SESSION_TYPE')
-
 
 def get_icon_themes(context):
     """Return the default icon theme names"""
@@ -164,7 +151,7 @@ def get_icon_themes(context):
     if icon_themes_env:
         result.extend([x for x in icon_themes_env.split(':') if x])
 
-    icon_themes_cfg = context.cfg.get_all('cola.icontheme')
+    icon_themes_cfg = list(reversed(context.cfg.get_all('cola.icontheme')))
     if icon_themes_cfg:
         result.extend(icon_themes_cfg)
 
@@ -175,7 +162,7 @@ def get_icon_themes(context):
 
 
 # style note: we use camelCase here since we're masquerading a Qt class
-class ColaApplication(object):
+class ColaApplication:
     """The main cola application
 
     ColaApplication handles i18n of user-visible data
@@ -190,9 +177,11 @@ class ColaApplication(object):
         icons.install(icon_themes or get_icon_themes(context))
 
         self.context = context
+        self.theme = None
         self._install_hidpi_config()
         self._app = ColaQApplication(context, list(argv))
         self._app.setWindowIcon(icons.cola())
+        self._app.setDesktopFileName('git-cola')
         self._install_style(gui_theme)
 
     def _install_style(self, theme_str):
@@ -200,12 +189,17 @@ class ColaApplication(object):
         if theme_str is None:
             theme_str = self.context.cfg.get('cola.theme', default='default')
         theme = themes.find_theme(theme_str)
+        self.theme = theme
         self._app.setStyleSheet(theme.build_style_sheet(self._app.palette()))
-        if theme_str != 'default':
+
+        is_macos_theme = theme_str.startswith('macos-')
+        if is_macos_theme:
+            themes.apply_platform_theme(theme_str)
+        elif theme_str != 'default':
             self._app.setPalette(theme.build_palette(self._app.palette()))
 
     def _install_hidpi_config(self):
-        """Sets QT HIDPI scalling (requires Qt 5.6)"""
+        """Sets QT HiDPI scaling (requires Qt 5.6)"""
         value = self.context.cfg.get('cola.hidpi', default=hidpi.Option.AUTO)
         hidpi.apply_choice(value)
 
@@ -213,9 +207,9 @@ class ColaApplication(object):
         """QApplication::activeWindow() pass-through"""
         return self._app.activeWindow()
 
-    def desktop(self):
-        """QApplication::desktop() pass-through"""
-        return self._app.desktop()
+    def palette(self):
+        """QApplication::palette() pass-through"""
+        return self._app.palette()
 
     def start(self):
         """Wrap exec_() and start the application"""
@@ -253,7 +247,7 @@ class ColaQApplication(QtWidgets.QApplication):
     """QApplication implementation for handling custom events"""
 
     def __init__(self, context, argv):
-        super(ColaQApplication, self).__init__(argv)
+        super().__init__(argv)
         self.context = context
         # Make icons sharp in HiDPI screen
         if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
@@ -269,7 +263,7 @@ class ColaQApplication(QtWidgets.QApplication):
                     'cola.refreshonfocus', default=False
                 ):
                     cmds.do(cmds.Refresh, context)
-        return super(ColaQApplication, self).event(e)
+        return super().event(e)
 
     def commitData(self, session_mgr):
         """Save session data"""
@@ -280,7 +274,7 @@ class ColaQApplication(QtWidgets.QApplication):
             return
         sid = session_mgr.sessionId()
         skey = session_mgr.sessionKey()
-        session_id = '%s_%s' % (sid, skey)
+        session_id = f'{sid}_{skey}'
         session = Session(session_id, repo=core.getcwd())
         session.update()
         view.save_state(settings=session)
@@ -325,19 +319,18 @@ def restore_session(args):
         args.repo = session.repo
 
 
-def application_init(args, update=False):
+def application_init(args, update=False, app_name='Git Cola'):
     """Parses the command-line arguments and starts git-cola"""
     # Ensure that we're working in a valid git repository.
     # If not, try to find one.  When found, chdir there.
     setup_environment()
     process_args(args)
 
-    context = new_context(args)
+    context = new_context(args, app_name)
     timer = context.timer
     timer.start('init')
 
     new_worktree(context, args.repo, args.prompt)
-
     if update:
         context.model.update_status()
 
@@ -347,7 +340,7 @@ def application_init(args, update=False):
     return context
 
 
-def new_context(args):
+def new_context(args, app_name):
     """Create top-level ApplicationContext objects"""
     context = ApplicationContext(args)
     context.settings = args.settings or Settings.read()
@@ -356,6 +349,7 @@ def new_context(args):
     context.fsmonitor = fsmonitor.create(context)
     context.selection = selection.create()
     context.model = main.create(context)
+    context.app_name = app_name
     context.app = new_application(context, args)
     context.timer = Timer()
 
@@ -446,7 +440,7 @@ def add_common_arguments(parser):
 
     # Specify the GUI theme
     parser.add_argument(
-        '--theme', metavar='<name>', default=None, help='specify an GUI theme name'
+        '--theme', metavar='<name>', default=None, help='specify a GUI theme name'
     )
 
 
@@ -490,8 +484,11 @@ def new_worktree(context, repo, prompt):
 
         valid = model.set_worktree(gitdir)
         if not valid:
+            err = model.error
             standard.critical(
-                N_('Error Opening Repository'), N_('Could not open %s.' % gitdir)
+                N_('Error Opening Repository'),
+                message=N_('Could not open %s.' % gitdir),
+                details=err,
             )
 
 
@@ -511,9 +508,9 @@ def async_update(context):
     """Update the model in the background
 
     git-cola should startup as quickly as possible.
-
     """
-    update_status = partial(context.model.update_status, update_index=True)
+    update_index = context.cfg.get('cola.updateindex', True)
+    update_status = partial(context.model.update_status, update_index=update_index)
     task = qtutils.SimpleTask(update_status)
     context.runtask.start(task)
 
@@ -535,6 +532,12 @@ def startup_message():
 
 def initialize():
     """System-level initialization"""
+    # We support ~/.config/git-cola/git-bindir on Windows for configuring
+    # a custom location for finding the "git" executable.
+    git_path = find_git()
+    if git_path:
+        prepend_path(git_path)
+
     # The current directory may have been deleted while we are still
     # in that directory.  We rectify this situation by walking up the
     # directory tree and retrying.
@@ -550,7 +553,7 @@ def initialize():
             os.chdir('..')
 
 
-class Timer(object):
+class Timer:
     """Simple performance timer"""
 
     def __init__(self):
@@ -575,10 +578,29 @@ class Timer(object):
     def display(self, key):
         """Display a timer"""
         elapsed = self.elapsed(key)
-        sys.stdout.write('%s: %.5fs\n' % (key, elapsed))
+        sys.stdout.write(f'{key}: {elapsed:.5f}s\n')
 
 
-class ApplicationContext(object):
+class NullArgs:
+    """Stub arguments for interactive API use"""
+
+    def __init__(self):
+        self.icon_themes = []
+        self.perf = False
+        self.prompt = False
+        self.repo = core.getcwd()
+        self.session = None
+        self.settings = None
+        self.theme = None
+        self.version = False
+
+
+def null_args():
+    """Create a new instance of application arguments"""
+    return NullArgs()
+
+
+class ApplicationContext:
     """Context for performing operations on Git and related data models"""
 
     def __init__(self, args):
@@ -601,14 +623,6 @@ class ApplicationContext(object):
         self.runtask = qtutils.RunTask(parent=view)
 
 
-def winmain(main_fn, *argv):
-    """Find Git and launch main(argv)"""
-    git_path = find_git()
-    if git_path:
-        prepend_path(git_path)
-    return main_fn(*argv)
-
-
 def find_git():
     """Return the path of git.exe, or None if we can't find it."""
     if not utils.is_win32():
@@ -617,9 +631,7 @@ def find_git():
     # If the user wants to use a Git/bin/ directory from a non-standard
     # directory then they can write its location into
     # ~/.config/git-cola/git-bindir
-    git_bindir = os.path.expanduser(
-        os.path.join('~', '.config', 'git-cola', 'git-bindir')
-    )
+    git_bindir = resources.config_home('git-bindir')
     if core.exists(git_bindir):
         custom_path = core.read(git_bindir).strip()
         if custom_path and core.exists(custom_path):
