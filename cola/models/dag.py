@@ -1,16 +1,20 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
+import datetime
 import json
 
 from .. import core
 from .. import utils
+from ..i18n import N_
+from ..models import prefs
 
 # put summary at the end b/c it can contain
 # any number of funky characters, including the separator
-logfmt = r'format:%H%x01%P%x01%d%x01%an%x01%ad%x01%ae%x01%s'
-logsep = chr(0x01)
+LOGFMT = r'format:%H%x01%P%x01%d%x01%an%x01%ad%x01%ae%x01%s'
+LOGSEP = chr(0x01)
+STAGE = 'STAGE'
+WORKTREE = 'WORKTREE'
 
 
-class CommitFactory(object):
+class CommitFactory:
     root_generation = 0
     commits = {}
 
@@ -37,10 +41,11 @@ class CommitFactory(object):
         return commit
 
 
-class DAG(object):
+class DAG:
     def __init__(self, ref, count):
         self.ref = ref
         self.count = count
+        self.display_status = True
         self.overrides = {}
 
     def set_ref(self, ref):
@@ -66,6 +71,10 @@ class DAG(object):
             if self.set_ref(ref):
                 self.overrides['ref'] = ref
 
+    def set_display_status(self, enabled):
+        """Should we display the worktree status?"""
+        self.display_status = enabled
+
     def overridden(self, opt):
         return opt in self.overrides
 
@@ -77,7 +86,7 @@ class DAG(object):
         return [p for p in all_refs if p and core.exists(p)]
 
 
-class Commit(object):
+class Commit:
     root_generation = 0
 
     __slots__ = (
@@ -85,6 +94,7 @@ class Commit(object):
         'summary',
         'parents',
         'children',
+        'branches',
         'tags',
         'author',
         'authdate',
@@ -100,7 +110,8 @@ class Commit(object):
         self.summary = None
         self.parents = []
         self.children = []
-        self.tags = set()
+        self.tags = []
+        self.branches = []
         self.email = None
         self.author = None
         self.authdate = None
@@ -111,7 +122,7 @@ class Commit(object):
         if log_entry:
             self.parse(log_entry)
 
-    def parse(self, log_entry, sep=logsep):
+    def parse(self, log_entry, sep=LOGSEP):
         self.oid = log_entry[:40]
         after_oid = log_entry[41:]
         details = after_oid.split(sep, 5)
@@ -142,14 +153,14 @@ class Commit(object):
 
     def add_label(self, tag):
         """Add tag/branch labels from `git log --decorate ....`"""
-
         if tag.startswith('tag: '):
             tag = tag[5:]  # strip off "tag: " leaving refs/tags/
-
+        if tag.startswith('refs/heads/'):
+            branch = tag[11:]
+            self.branches.append(branch)
         if tag.startswith('refs/'):
             # strip off refs/ leaving just tags/XXX remotes/XXX heads/XXX
             tag = tag[5:]
-
         if tag.endswith('/HEAD'):
             return
 
@@ -181,13 +192,12 @@ class Commit(object):
         #      ...
         #
         # C.f. http://thread.gmane.org/gmane.linux.kernel/1931234
-
         head_arrow = 'HEAD -> '
         if tag.startswith(head_arrow):
-            self.tags.add('HEAD')
+            self.tags.append('HEAD')
             self.add_label(tag[len(head_arrow) :])
         else:
-            self.tags.add(tag)
+            self.tags.append(tag)
 
     def __str__(self):
         return self.oid
@@ -206,21 +216,21 @@ class Commit(object):
         return json.dumps(self.data(), sort_keys=True, indent=4, default=list)
 
     def is_fork(self):
-        '''Returns True if the node is a fork'''
+        """Returns True if the node is a fork"""
         return len(self.children) > 1
 
     def is_merge(self):
-        '''Returns True if the node is a fork'''
+        """Returns True if the node is a fork"""
         return len(self.parents) > 1
 
 
-class RepoReader(object):
-    def __init__(self, context, params):
+class RepoReader:
+    def __init__(self, context, params, allow_git_init=True):
         self.context = context
         self.params = params
         self.git = context.git
         self.returncode = 0
-        self._proc = None
+        self._allow_git_init = allow_git_init
         self._objects = {}
         self._cmd = [
             'git',
@@ -230,9 +240,8 @@ class RepoReader(object):
             'log.showSignature=false',
             'log',
             '--topo-order',
-            '--reverse',
             '--decorate=full',
-            '--pretty=' + logfmt,
+            '--pretty=' + LOGFMT,
         ]
         self._cached = False
         """Indicates that all data has been read"""
@@ -247,9 +256,6 @@ class RepoReader(object):
 
     def reset(self):
         CommitFactory.reset()
-        if self._proc:
-            self._proc.kill()
-        self._proc = None
         self._cached = False
         self._topo_list = []
 
@@ -267,29 +273,135 @@ class RepoReader(object):
 
         self.reset()
         ref_args = utils.shell_split(self.params.ref)
-        cmd = self._cmd + ['-%d' % self.params.count] + ref_args
-        self._proc = core.start_command(cmd)
+        cmd = (
+            self._cmd
+            + ['-%d' % self.params.count]
+            + ['--date=%s' % prefs.logdate(self.context)]
+            + ref_args
+        )
+        commit = None
 
-        while True:
-            log_entry = core.readline(self._proc.stdout).rstrip()
-            if not log_entry:
-                self._cached = True
-                self._proc.wait()
-                self.returncode = self._proc.returncode
-                self._proc = None
-                break
-            oid = log_entry[:40]
-            try:
-                yield self._objects[oid]
-            except KeyError:
-                commit = CommitFactory.new(log_entry=log_entry)
-                self._objects[commit.oid] = commit
-                self._topo_list.append(commit)
+        # When _allow_git_init is True then we detect the "git init" state
+        # by checking whether any local branches currently exist.
+        if not self._allow_git_init or self.context.model.local_branches:
+            status, out, _ = core.run_command(cmd)
+            for log_entry in reversed(out.splitlines()):
+                if not log_entry:
+                    break
+                oid = log_entry[:40]
+                try:
+                    commit = self._objects[oid]
+                except KeyError:
+                    commit = CommitFactory.new(log_entry=log_entry)
+                    self._objects[commit.oid] = commit
+                    self._topo_list.append(commit)
                 yield commit
-        return
+        else:
+            # git init
+            status = 0
+        self._top_commit = commit
+        self._cached = True
+        self.returncode = status
+
+    def get_worktree_commits(self):
+        """A Commit object that represents unstaged modified changes in a worktree"""
+        if self.returncode != 0 or not self.params.display_status:
+            return None, None
+        context = self.context
+        model = context.model
+        if not model.modified and not model.staged and not model.unmerged:
+            return None, None
+        parents = []
+        parent_commit = self._top_commit
+        status, head, _ = context.git.rev_parse('HEAD', _readonly=True)
+        if status != 0:
+            # "git init" should include worktree and stage entries.
+            # We do not early out with None and leave the parents list empty.
+            pass
+        elif parent_commit:
+            # Is the top-most commit also our current HEAD?
+            # If so we'll include worktree and stage placeholder commits
+            # otherwise we should early out and omit these entries.
+            if head != parent_commit.oid:
+                return None, None
+            parents = [parent_commit]
+
+        author, email = context.cfg.get_author()
+        if model.commitmsg:
+            summary = model.commitmsg.split('\n', 1)[0]
+        else:
+            summary = ''
+
+        if summary:
+            stage_summary = f'STAGE: {summary}'
+            worktree_summary = f'WORKTREE: {summary}'
+        else:
+            stage_summary = N_('STAGE: changes ready to commit')
+            worktree_summary = N_('WORKTREE: unstaged changes')
+        authdate = get_date_for_current_time(context)
+
+        stage_commit = None
+        worktree_commit = None
+
+        if model.staged:
+            stage_commit = Commit(oid=STAGE)
+            stage_commit.add_label(STAGE)
+            stage_commit.parents = parents
+            stage_commit.summary = stage_summary
+            stage_commit.author = author
+            stage_commit.email = email
+            stage_commit.authdate = authdate
+            stage_commit.parsed = True
+            if parent_commit:
+                parent_commit.children.append(stage_commit)
+                stage_commit.generation = parent_commit.generation + 1
+            # Update state for the subsequent WORKTREE pseudo-commit.
+            parents = [stage_commit]
+            parent_commit = stage_commit
+
+        if model.modified or model.unmerged:
+            worktree_commit = Commit(oid=WORKTREE)
+            worktree_commit.add_label(WORKTREE)
+            worktree_commit.parents = parents
+            worktree_commit.summary = worktree_summary
+            worktree_commit.author = author
+            worktree_commit.email = email
+            worktree_commit.authdate = authdate
+            worktree_commit.parsed = True
+            if parent_commit:
+                parent_commit.children.append(worktree_commit)
+                worktree_commit.generation = parent_commit.generation + 1
+
+        return stage_commit, worktree_commit
 
     def __getitem__(self, oid):
         return self._objects[oid]
 
     def items(self):
         return list(self._objects.items())
+
+
+def get_date_for_current_time(context):
+    """Return the current time formatted according to the cola.logdate configuration"""
+    DateFormat = prefs.DateFormat
+    logdate = prefs.logdate(context)
+    now = datetime.datetime.now().astimezone()
+    if logdate == DateFormat.DEFAULT:
+        authdate = now.strftime('%c %z')
+    elif logdate == DateFormat.RELATIVE:
+        authdate = '0 seconds ago'
+    elif logdate == DateFormat.LOCAL:
+        authdate = now.strftime('%c')
+    elif logdate == DateFormat.ISO:
+        authdate = now.strftime('%Y-%m-%d %H:%M:%S %z')
+    elif logdate == DateFormat.ISO_STRICT:
+        authdate = now.strftime('%Y-%m-%dT%H:%M:%S%z')
+    elif logdate == DateFormat.RAW:
+        authdate = now.strftime('%s %z')
+    elif logdate == DateFormat.HUMAN:
+        authdate = now.strftime('%a %b %d %H:%M')
+    elif logdate == DateFormat.UNIX:
+        authdate = now.strftime('%s')
+    else:
+        authdate = now.strftime('%c %z')
+    return authdate

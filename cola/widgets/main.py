@@ -1,5 +1,4 @@
 """Main UI for authoring commits and other Git Cola interactions"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 from functools import partial
 
@@ -9,7 +8,6 @@ from qtpy import QtWidgets
 from qtpy.QtCore import Qt
 from qtpy.QtCore import Signal
 
-from ..compat import uchr
 from ..compat import WIN32
 from ..i18n import N_
 from ..interaction import Interaction
@@ -36,18 +34,17 @@ from . import browse
 from . import cfgactions
 from . import clone
 from . import commitmsg
+from . import common
 from . import compare
 from . import createbranch
 from . import createtag
 from . import dag
-from . import defs
 from . import diff
 from . import finder
 from . import editremotes
 from . import grep
 from . import log
 from . import merge
-from . import patch
 from . import prefs as prefs_widget
 from . import recent
 from . import remote
@@ -62,7 +59,6 @@ class MainView(standard.MainWindow):
     config_actions_changed = Signal(object)
 
     def __init__(self, context, parent=None):
-        # pylint: disable=too-many-statements,too-many-locals
         standard.MainWindow.__init__(self, parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
 
@@ -89,8 +85,9 @@ class MainView(standard.MainWindow):
             )
 
         # "Actions" widget
+        self.actionswidget = action.ActionButtons(context, self)
         self.actionsdock = create_dock(
-            'Actions', N_('Actions'), self, widget=action.ActionButtons(context, self)
+            'Actions', N_('Actions'), self, widget=self.actionswidget
         )
         qtutils.hide_dock(self.actionsdock)
 
@@ -99,7 +96,7 @@ class MainView(standard.MainWindow):
             'Status',
             N_('Status'),
             self,
-            fn=lambda dock: status.StatusWidget(context, dock.titleBarWidget(), dock),
+            func=lambda dock: status.StatusWidget(context, dock.titleBarWidget(), dock),
         )
         self.statuswidget = self.statusdock.widget()
 
@@ -108,7 +105,7 @@ class MainView(standard.MainWindow):
             'Favorites',
             N_('Favorites'),
             self,
-            fn=lambda dock: bookmarks.bookmark(context, dock),
+            func=lambda dock: bookmarks.bookmark(context, dock),
         )
         bookmarkswidget = self.bookmarksdock.widget()
         qtutils.hide_dock(self.bookmarksdock)
@@ -117,7 +114,7 @@ class MainView(standard.MainWindow):
             'Recent',
             N_('Recent'),
             self,
-            fn=lambda dock: bookmarks.recent(context, dock),
+            func=lambda dock: bookmarks.recent(context, dock),
         )
         recentwidget = self.recentdock.widget()
         qtutils.hide_dock(self.recentdock)
@@ -125,7 +122,10 @@ class MainView(standard.MainWindow):
 
         # "Branch" widgets
         self.branchdock = create_dock(
-            'Branches', N_('Branches'), self, fn=partial(branch.BranchesWidget, context)
+            'Branches',
+            N_('Branches'),
+            self,
+            func=partial(branch.BranchesWidget, context),
         )
         self.branchwidget = self.branchdock.widget()
         titlebar = self.branchdock.titleBarWidget()
@@ -137,45 +137,44 @@ class MainView(standard.MainWindow):
             'Submodules',
             N_('Submodules'),
             self,
-            fn=partial(submodules.SubmodulesWidget, context),
+            func=partial(submodules.SubmodulesWidget, context),
         )
         self.submoduleswidget = self.submodulesdock.widget()
 
         # "Commit Message Editor" widget
-        self.position_label = QtWidgets.QLabel()
-        self.position_label.setAlignment(Qt.AlignCenter)
-        font = qtutils.default_monospace_font()
-        font.setPointSize(int(font.pointSize() * 0.8))
-        self.position_label.setFont(font)
-
-        # make the position label fixed size to avoid layout issues
-        fm = self.position_label.fontMetrics()
-        width = fm.width('99:999') + defs.spacing
-        self.position_label.setMinimumWidth(width)
-
         editor = commitmsg.CommitMessageEditor(context, self)
         self.commiteditor = editor
-        self.commitdock = create_dock('Commit', N_('Commit'), self, widget=editor)
+        self.commitdock = create_dock(
+            'Commit', N_('Commit'), self, widget=editor, hide_title=True, stretch=False
+        )
         titlebar = self.commitdock.titleBarWidget()
-        titlebar.add_corner_widget(self.position_label)
+        titlebar.add_title_widget(self.commiteditor.topwidget)
+        self.commitdock.setTabOrder(
+            self.commiteditor.summary, self.commiteditor.description
+        )
 
         # "Console" widget
         self.logwidget = log.LogWidget(context)
         self.logdock = create_dock(
-            'Console', N_('Console'), self, widget=self.logwidget
+            'Console', N_('Console'), self, widget=self.logwidget, hide_title=True
         )
         qtutils.hide_dock(self.logdock)
 
         # "Diff Viewer" widget
         self.diffdock = create_dock(
-            'Diff', N_('Diff'), self, fn=lambda dock: diff.Viewer(context, parent=dock)
+            'Diff',
+            N_('Diff'),
+            self,
+            func=lambda dock: diff.Viewer(context, parent=dock),
+            hide_title=True,
         )
         self.diffviewer = self.diffdock.widget()
         self.diffviewer.set_diff_type(self.model.diff_type)
-
+        self.diffviewer.enable_filename_tracking()
         self.diffeditor = self.diffviewer.text
         titlebar = self.diffdock.titleBarWidget()
-        titlebar.add_corner_widget(self.diffviewer.options)
+        titlebar.add_title_widget(self.diffviewer.options)
+        titlebar.add_title_widget(self.diffviewer.filename)
 
         # All Actions
         add_action = qtutils.add_action
@@ -188,9 +187,14 @@ class MainView(standard.MainWindow):
             False,
         )
         self.commit_amend_action.setIcon(icons.edit())
-        self.commit_amend_action.setShortcut(hotkeys.AMEND)
+        self.commit_amend_action.setShortcuts(hotkeys.AMEND)
         self.commit_amend_action.setShortcutContext(Qt.WidgetShortcut)
 
+        # Make Cmd-M minimize the window on macOS.
+        if utils.is_darwin():
+            self.minimize_action = add_action(
+                self, N_('Minimize Window'), self.showMinimized, hotkeys.MACOS_MINIMIZE
+            )
         self.unstage_all_action = add_action(
             self, N_('Unstage All'), cmds.run(cmds.UnstageAll, context)
         )
@@ -202,7 +206,7 @@ class MainView(standard.MainWindow):
         self.undo_commit_action.setIcon(icons.style_dialog_discard())
 
         self.unstage_selected_action = add_action(
-            self, N_('Unstage From Commit'), cmds.run(cmds.UnstageSelected, context)
+            self, N_('Unstage'), cmds.run(cmds.UnstageSelected, context)
         )
         self.unstage_selected_action.setIcon(icons.remove())
 
@@ -213,7 +217,7 @@ class MainView(standard.MainWindow):
 
         self.stage_modified_action = add_action(
             self,
-            N_('Stage Changed Files To Commit'),
+            cmds.StageModified.name(),
             cmds.run(cmds.StageModified, context),
             hotkeys.STAGE_MODIFIED,
         )
@@ -221,16 +225,40 @@ class MainView(standard.MainWindow):
 
         self.stage_untracked_action = add_action(
             self,
-            N_('Stage All Untracked'),
+            cmds.StageUntracked.name(),
             cmds.run(cmds.StageUntracked, context),
             hotkeys.STAGE_UNTRACKED,
         )
         self.stage_untracked_action.setIcon(icons.add())
 
         self.apply_patches_action = add_action(
-            self, N_('Apply Patches...'), partial(patch.apply_patches, context)
+            self, N_('Apply Patches...'), partial(diff.apply_patches, context)
         )
         self.apply_patches_action.setIcon(icons.diff())
+
+        self.apply_patches_abort_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Abort Applying Patches...'),
+            N_('Abort the current "git am" patch session'),
+            cmds.run(cmds.AbortApplyPatch, context),
+        )
+        self.apply_patches_abort_action.setIcon(icons.style_dialog_discard())
+
+        self.apply_patches_continue_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Continue Applying Patches'),
+            N_('Commit the current state and continue applying patches'),
+            cmds.run(cmds.ApplyPatchesContinue, context),
+        )
+        self.apply_patches_continue_action.setIcon(icons.commit())
+
+        self.apply_patches_skip_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Skip Current Patch'),
+            N_('Skip applying the current patch and continue applying patches'),
+            cmds.run(cmds.ApplyPatchesContinue, context),
+        )
+        self.apply_patches_skip_action.setIcon(icons.discard())
 
         self.export_patches_action = add_action(
             self,
@@ -250,11 +278,11 @@ class MainView(standard.MainWindow):
         )
         self.new_bare_repository_action.setIcon(icons.new())
 
-        prefs_fn = partial(
+        prefs_func = partial(
             prefs_widget.preferences, context, parent=self, model=prefs_model
         )
         self.preferences_action = add_action(
-            self, N_('Preferences'), prefs_fn, QtGui.QKeySequence.Preferences
+            self, N_('Preferences'), prefs_func, QtGui.QKeySequence.Preferences
         )
         self.preferences_action.setIcon(icons.configure())
 
@@ -267,7 +295,7 @@ class MainView(standard.MainWindow):
             self,
             cmds.Refresh.name(),
             cmds.run(cmds.Refresh, context),
-            *hotkeys.REFRESH_HOTKEYS
+            *hotkeys.REFRESH_HOTKEYS,
         )
         self.rescan_action.setIcon(icons.sync())
 
@@ -276,7 +304,6 @@ class MainView(standard.MainWindow):
             N_('Find Files'),
             partial(finder.finder, context),
             hotkeys.FINDER,
-            hotkeys.FINDER_SECONDARY,
         )
         self.find_files_action.setIcon(icons.search())
 
@@ -295,6 +322,10 @@ class MainView(standard.MainWindow):
             hotkeys.CHERRY_PICK,
         )
         self.cherry_pick_action.setIcon(icons.cherry_pick())
+        self.cherry_pick_abort_action = add_action(
+            self, N_('Abort Cherry-Pick...'), cmds.run(cmds.AbortCherryPick, context)
+        )
+        self.cherry_pick_abort_action.setIcon(icons.style_dialog_discard())
 
         self.load_commitmsg_action = add_action(
             self, N_('Load Commit Message...'), partial(guicmds.load_commitmsg, context)
@@ -328,7 +359,7 @@ class MainView(standard.MainWindow):
         self.merge_abort_action = add_action(
             self, N_('Abort Merge...'), cmds.run(cmds.AbortMerge, context)
         )
-        self.merge_abort_action.setIcon(icons.style_dialog_reset())
+        self.merge_abort_action.setIcon(icons.style_dialog_discard())
 
         self.update_submodules_action = add_action(
             self,
@@ -344,18 +375,30 @@ class MainView(standard.MainWindow):
         )
         self.add_submodule_action.setIcon(icons.add())
 
-        self.fetch_action = add_action(
-            self, N_('Fetch...'), partial(remote.fetch, context), hotkeys.FETCH
+        self.fetch_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Fetch...'),
+            N_('Fetch from one or more remotes using "git fetch"'),
+            partial(remote.fetch, context),
+            hotkeys.FETCH,
         )
         self.fetch_action.setIcon(icons.download())
 
-        self.push_action = add_action(
-            self, N_('Push...'), partial(remote.push, context), hotkeys.PUSH
+        self.push_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Push...'),
+            N_('Push to one or more remotes using "git push"'),
+            partial(remote.push, context),
+            hotkeys.PUSH,
         )
         self.push_action.setIcon(icons.push())
 
-        self.pull_action = add_action(
-            self, N_('Pull...'), partial(remote.pull, context), hotkeys.PULL
+        self.pull_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Pull...'),
+            N_('Integrate changes using "git pull"'),
+            partial(remote.pull, context),
+            hotkeys.PULL,
         )
         self.pull_action.setIcon(icons.pull())
 
@@ -371,56 +414,62 @@ class MainView(standard.MainWindow):
         )
         self.open_repo_new_action.setIcon(icons.folder())
 
-        self.stash_action = add_action(
-            self, N_('Stash...'), partial(stash.view, context), hotkeys.STASH
+        self.stash_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Stash...'),
+            N_('Temporarily stash away uncommitted changes using "git stash"'),
+            partial(stash.view, context),
+            hotkeys.STASH,
         )
         self.stash_action.setIcon(icons.commit())
 
-        self.reset_soft_action = add_action(
-            self, N_('Reset Branch (Soft)'), partial(guicmds.reset_soft, context)
+        self.reset_soft_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Reset Branch (Soft)'),
+            cmds.ResetSoft.tooltip('<commit>'),
+            partial(guicmds.reset_soft, context),
         )
         self.reset_soft_action.setIcon(icons.style_dialog_reset())
-        self.reset_soft_action.setToolTip(cmds.ResetSoft.tooltip('<commit>'))
 
-        self.reset_mixed_action = add_action(
+        self.reset_mixed_action = qtutils.add_action_with_tooltip(
             self,
             N_('Reset Branch and Stage (Mixed)'),
+            cmds.ResetMixed.tooltip('<commit>'),
             partial(guicmds.reset_mixed, context),
         )
         self.reset_mixed_action.setIcon(icons.style_dialog_reset())
-        self.reset_mixed_action.setToolTip(cmds.ResetMixed.tooltip('<commit>'))
 
-        self.reset_keep_action = add_action(
+        self.reset_keep_action = qtutils.add_action_with_tooltip(
             self,
             N_('Restore Worktree and Reset All (Keep Unstaged Changes)'),
+            cmds.ResetKeep.tooltip('<commit>'),
             partial(guicmds.reset_keep, context),
         )
         self.reset_keep_action.setIcon(icons.style_dialog_reset())
-        self.reset_keep_action.setToolTip(cmds.ResetKeep.tooltip('<commit>'))
 
-        self.reset_merge_action = add_action(
+        self.reset_merge_action = qtutils.add_action_with_tooltip(
             self,
             N_('Restore Worktree and Reset All (Merge)'),
+            cmds.ResetMerge.tooltip('<commit>'),
             partial(guicmds.reset_merge, context),
         )
         self.reset_merge_action.setIcon(icons.style_dialog_reset())
-        self.reset_merge_action.setToolTip(cmds.ResetMerge.tooltip('<commit>'))
 
-        self.reset_hard_action = add_action(
+        self.reset_hard_action = qtutils.add_action_with_tooltip(
             self,
             N_('Restore Worktree and Reset All (Hard)'),
+            cmds.ResetHard.tooltip('<commit>'),
             partial(guicmds.reset_hard, context),
         )
         self.reset_hard_action.setIcon(icons.style_dialog_reset())
-        self.reset_hard_action.setToolTip(cmds.ResetHard.tooltip('<commit>'))
 
-        self.restore_worktree_action = add_action(
-            self, N_('Restore Worktree'), partial(guicmds.restore_worktree, context)
+        self.restore_worktree_action = qtutils.add_action_with_tooltip(
+            self,
+            N_('Restore Worktree'),
+            cmds.RestoreWorktree.tooltip('<commit>'),
+            partial(guicmds.restore_worktree, context),
         )
         self.restore_worktree_action.setIcon(icons.edit())
-        self.restore_worktree_action.setToolTip(
-            cmds.RestoreWorktree.tooltip('<commit>')
-        )
 
         self.clone_repo_action = add_action(
             self, N_('Clone...'), partial(clone.clone, context)
@@ -477,6 +526,18 @@ class MainView(standard.MainWindow):
         self.help_about_action = add_action(
             self, N_('About'), partial(about.about_dialog, context)
         )
+
+        self.diff_against_commit_action = add_action(
+            self,
+            N_('Against Commit... (Diff Mode)'),
+            partial(guicmds.diff_against_commit, context),
+        )
+        self.diff_against_commit_action.setIcon(icons.compare())
+
+        self.exit_diff_mode_action = add_action(
+            self, N_('Exit Diff Mode'), cmds.run(cmds.ResetMode, context)
+        )
+        self.exit_diff_mode_action.setIcon(icons.compare())
 
         self.diff_expression_action = add_action(
             self, N_('Expression...'), partial(guicmds.diff_expression, context)
@@ -547,10 +608,12 @@ class MainView(standard.MainWindow):
             cmds.run(cmds.Rebase, context),
             hotkeys.REBASE_START_AND_CONTINUE,
         )
+        self.rebase_start_action.setIcon(icons.play())
 
         self.rebase_edit_todo_action = add_action(
             self, N_('Edit...'), cmds.run(cmds.RebaseEditTodo, context)
         )
+        self.rebase_edit_todo_action.setIcon(icons.edit())
 
         self.rebase_continue_action = add_action(
             self,
@@ -558,14 +621,17 @@ class MainView(standard.MainWindow):
             cmds.run(cmds.RebaseContinue, context),
             hotkeys.REBASE_START_AND_CONTINUE,
         )
+        self.rebase_continue_action.setIcon(icons.play())
 
         self.rebase_skip_action = add_action(
             self, N_('Skip Current Patch'), cmds.run(cmds.RebaseSkip, context)
         )
+        self.rebase_skip_action.setIcon(icons.delete())
 
         self.rebase_abort_action = add_action(
             self, N_('Abort'), cmds.run(cmds.RebaseAbort, context)
         )
+        self.rebase_abort_action.setIcon(icons.close())
 
         # For "Start Rebase" only, reverse the first argument to setEnabled()
         # so that we can operate on it as a group.
@@ -599,6 +665,18 @@ class MainView(standard.MainWindow):
             self, N_('Reset Layout'), self.reset_layout
         )
 
+        self.quick_repository_search = add_action(
+            self,
+            N_('Quick Open...'),
+            lambda: guicmds.open_quick_repo_search(self.context, parent=self),
+            hotkeys.OPEN_REPO_SEARCH,
+        )
+        self.quick_repository_search.setIcon(icons.search())
+
+        self.terminal_action = common.terminal_action(
+            context, self, hotkey=hotkeys.TERMINAL
+        )
+
         # Create the application menu
         self.menubar = QtWidgets.QMenuBar(self)
         self.setMenuBar(self.menubar)
@@ -606,6 +684,7 @@ class MainView(standard.MainWindow):
         # File Menu
         add_menu = qtutils.add_menu
         self.file_menu = add_menu(N_('&File'), self.menubar)
+        self.file_menu.addAction(self.quick_repository_search)
         # File->Open Recent menu
         self.open_recent_menu = self.file_menu.addMenu(N_('Open Recent'))
         self.open_recent_menu.setIcon(icons.folder())
@@ -621,9 +700,15 @@ class MainView(standard.MainWindow):
         self.file_menu.addAction(self.edit_remotes_action)
         self.file_menu.addAction(self.browse_recently_modified_action)
         self.file_menu.addSeparator()
-        self.file_menu.addAction(self.apply_patches_action)
-        self.file_menu.addAction(self.export_patches_action)
         self.file_menu.addAction(self.save_tarball_action)
+
+        self.patches_menu = self.file_menu.addMenu(N_('Patches'))
+        self.patches_menu.setIcon(icons.diff())
+        self.patches_menu.addAction(self.export_patches_action)
+        self.patches_menu.addAction(self.apply_patches_action)
+        self.patches_menu.addAction(self.apply_patches_continue_action)
+        self.patches_menu.addAction(self.apply_patches_skip_action)
+        self.patches_menu.addAction(self.apply_patches_abort_action)
 
         # Git Annex / Git LFS
         annex = core.find_executable('git-annex')
@@ -666,6 +751,14 @@ class MainView(standard.MainWindow):
         cut.setIcon(icons.cut())
         copy = add_action(edit_menu, N_('Copy'), edit_proxy.copy, hotkeys.COPY)
         copy.setIcon(icons.copy())
+        copy_commit_id = add_action(
+            edit_menu,
+            N_('Copy Commit'),
+            lambda: guicmds.copy_commit_id_to_clipboard(context),
+            hotkeys.COPY_COMMIT_ID,
+        )
+        copy_commit_id.setIcon(icons.copy())
+        self.addAction(copy_commit_id)
         paste = add_action(edit_menu, N_('Paste'), edit_proxy.paste, hotkeys.PASTE)
         paste.setIcon(icons.paste())
         delete = add_action(edit_menu, N_('Delete'), edit_proxy.delete, hotkeys.DELETE)
@@ -676,10 +769,12 @@ class MainView(standard.MainWindow):
         )
         select_all.setIcon(icons.select_all())
         edit_menu.addSeparator()
-        commitmsg.add_menu_actions(edit_menu, self.commiteditor.menu_actions)
+        qtutils.add_menu_actions(edit_menu, self.commiteditor.menu_actions)
 
         # Actions menu
         self.actions_menu = add_menu(N_('Actions'), self.menubar)
+        if self.terminal_action is not None:
+            self.actions_menu.addAction(self.terminal_action)
         self.actions_menu.addAction(self.fetch_action)
         self.actions_menu.addAction(self.push_action)
         self.actions_menu.addAction(self.pull_action)
@@ -687,6 +782,7 @@ class MainView(standard.MainWindow):
         self.actions_menu.addSeparator()
         self.actions_menu.addAction(self.create_tag_action)
         self.actions_menu.addAction(self.cherry_pick_action)
+        self.actions_menu.addAction(self.cherry_pick_abort_action)
         self.actions_menu.addAction(self.merge_local_action)
         self.actions_menu.addAction(self.merge_abort_action)
         self.actions_menu.addSeparator()
@@ -719,8 +815,10 @@ class MainView(standard.MainWindow):
         self.diff_menu = add_menu(N_('Diff'), self.menubar)
         self.diff_menu.addAction(self.diff_expression_action)
         self.diff_menu.addAction(self.branch_compare_action)
-        self.diff_menu.addSeparator()
         self.diff_menu.addAction(self.show_diffstat_action)
+        self.diff_menu.addSeparator()
+        self.diff_menu.addAction(self.diff_against_commit_action)
+        self.diff_menu.addAction(self.exit_diff_mode_action)
 
         # Branch Menu
         self.branch_menu = add_menu(N_('Branch'), self.menubar)
@@ -763,12 +861,10 @@ class MainView(standard.MainWindow):
 
         # View Menu
         self.view_menu = add_menu(N_('View'), self.menubar)
-        # pylint: disable=no-member
         self.view_menu.aboutToShow.connect(lambda: self.build_view_menu(self.view_menu))
         self.setup_dockwidget_view_menu()
         if utils.is_darwin():
-            # TODO or self.menubar.setNativeMenuBar(False)
-            # Since native OSX menu doesn't show empty entries
+            # The native macOS menu doesn't show empty entries.
             self.build_view_menu(self.view_menu)
 
         # Help Menu
@@ -809,13 +905,8 @@ class MainView(standard.MainWindow):
         )
 
         prefs_model.config_updated.connect(self._config_updated)
-
-        # Set a default value
-        self.show_cursor_position(1, 0)
-
         self.commit_menu.aboutToShow.connect(self.update_menu_actions)
         self.open_recent_menu.aboutToShow.connect(self.build_recent_menu)
-        self.commiteditor.cursor_changed.connect(self.show_cursor_position)
 
         self.diffeditor.options_changed.connect(self.statuswidget.refresh)
         self.diffeditor.up.connect(self.statuswidget.move_up)
@@ -890,6 +981,8 @@ class MainView(standard.MainWindow):
 
     def build_view_menu(self, menu):
         menu.clear()
+        if utils.is_darwin():
+            menu.addAction(self.minimize_action)
         menu.addAction(self.browse_action)
         menu.addAction(self.dag_action)
         menu.addSeparator()
@@ -950,7 +1043,7 @@ class MainView(standard.MainWindow):
                 # Omit the current worktree from the "Open Recent" menu.
                 continue
             name = entry['name']
-            text = '%s %s %s' % (name, uchr(0x2192), directory)
+            text = f'{name} {chr(0x2192)} {directory}'
             menu.addAction(text, cmds.run(cmd, context, directory))
 
     # Accessors
@@ -1007,10 +1100,15 @@ class MainView(standard.MainWindow):
     def refresh(self):
         """Update the title with the current branch and directory name."""
         curbranch = self.model.currentbranch
-        curdir = core.getcwd()
         is_merging = self.model.is_merging
         is_rebasing = self.model.is_rebasing
+        is_applying_patch = self.model.is_applying_patch
+        is_cherry_picking = self.model.is_rebasing
 
+        try:
+            curdir = core.getcwd()
+        except FileNotFoundError:
+            return
         msg = N_('Repository: %s') % curdir
         msg += '\n'
         msg += N_('Branch: %s') % curbranch
@@ -1022,7 +1120,18 @@ class MainView(standard.MainWindow):
                 'Resolve conflicts, commit changes, and run:\n'
                 '    Rebase > Continue'
             )
-
+        elif is_applying_patch:
+            msg += '\n\n'
+            msg += N_(
+                'This repository has unresolved conflicts after applying a patch.\n'
+                'Resolve conflicts and commit changes.'
+            )
+        elif is_cherry_picking:
+            msg += '\n\n'
+            msg += N_(
+                'This repository is in the middle of a cherry-pick.\n'
+                'Resolve conflicts and commit changes.'
+            )
         elif is_merging:
             msg += '\n\n'
             msg += N_(
@@ -1032,13 +1141,16 @@ class MainView(standard.MainWindow):
 
         self.refresh_window_title()
 
-        if self.mode == self.model.mode_amend:
-            self.commit_amend_action.setChecked(True)
-        else:
-            self.commit_amend_action.setChecked(False)
+        checked = self.mode == self.model.mode_amend
+        with qtutils.BlockSignals(self.commit_amend_action):
+            self.commit_amend_action.setChecked(checked)
 
         self.commitdock.setToolTip(msg)
+
+        self.actionswidget.set_mode(self.mode)
         self.commiteditor.set_mode(self.mode)
+        self.statuswidget.set_mode(self.mode)
+
         self.update_actions()
 
     def refresh_window_title(self):
@@ -1047,18 +1159,28 @@ class MainView(standard.MainWindow):
 
         project = self.model.project
         curbranch = self.model.currentbranch
+        is_cherry_picking = self.model.is_cherry_picking
         is_merging = self.model.is_merging
         is_rebasing = self.model.is_rebasing
-        prefix = uchr(0xAB)
-        suffix = uchr(0xBB)
+        is_applying_patch = self.model.is_applying_patch
+        is_diff_mode = self.model.is_diff_mode()
+        is_amend_mode = self.mode == self.model.mode_amend
 
-        if is_rebasing:
-            alerts.append(N_('Rebasing'))
+        prefix = chr(0xAB)
+        suffix = chr(0xBB)
+
+        if is_amend_mode:
+            alerts.append(N_('Amending'))
+        elif is_diff_mode:
+            alerts.append(N_('Diff Mode'))
+        elif is_cherry_picking:
+            alerts.append(N_('Cherry-picking'))
         elif is_merging:
             alerts.append(N_('Merging'))
-
-        if self.mode == self.model.mode_amend:
-            alerts.append(N_('Amending'))
+        elif is_rebasing:
+            alerts.append(N_('Rebasing'))
+        elif is_applying_patch:
+            alerts.append(N_('Applying Patch'))
 
         if alerts:
             alert_text = (prefix + ' %s ' + suffix + ' ') % ', '.join(alerts)
@@ -1070,7 +1192,7 @@ class MainView(standard.MainWindow):
         else:
             path_text = ''
 
-        title = '%s: %s %s%s' % (project, curbranch, alert_text, path_text)
+        title = f'{project}: {curbranch} {alert_text}{path_text}'
         self.setWindowTitle(title)
 
     def update_actions(self):
@@ -1083,6 +1205,14 @@ class MainView(standard.MainWindow):
 
         self.annex_init_action.setEnabled(not self.model.annex)
         self.lfs_init_action.setEnabled(not self.model.lfs)
+        self.merge_abort_action.setEnabled(self.model.is_merging)
+        self.cherry_pick_abort_action.setEnabled(self.model.is_cherry_picking)
+        self.apply_patches_continue_action.setEnabled(self.model.is_applying_patch)
+        self.apply_patches_skip_action.setEnabled(self.model.is_applying_patch)
+        self.apply_patches_abort_action.setEnabled(self.model.is_applying_patch)
+
+        diff_mode = self.model.mode == self.model.mode_diff
+        self.exit_diff_mode_action.setEnabled(diff_mode)
 
     def update_menu_actions(self):
         # Enable the Prepare Commit Message action if the hook exists
@@ -1185,40 +1315,8 @@ class MainView(standard.MainWindow):
     def git_dag(self):
         self.dag = dag.git_dag(self.context, existing_view=self.dag)
 
-    def show_cursor_position(self, rows, cols):
-        display = '%02d:%02d' % (rows, cols)
-        css = """
-            <style>
-            .good {
-            }
-            .first-warning {
-                color: black;
-                background-color: yellow;
-            }
-            .second-warning {
-                color: black;
-                background-color: #f83;
-            }
-            .error {
-                color: white;
-                background-color: red;
-            }
-            </style>
-        """
 
-        if cols > 78:
-            cls = 'error'
-        elif cols > 72:
-            cls = 'second-warning'
-        elif cols > 64:
-            cls = 'first-warning'
-        else:
-            cls = 'good'
-        div = '<div class="%s">%s</div>' % (cls, display)
-        self.position_label.setText(css + div)
-
-
-class FocusProxy(object):
+class FocusProxy:
     """Proxy over child widgets and operate on the focused widget"""
 
     def __init__(self, *widgets):
@@ -1248,14 +1346,14 @@ class FocusProxy(object):
 
         def callback():
             focus = self.focus(name)
-            fn = getattr(focus, name, None)
-            if fn:
-                fn()
+            func = getattr(focus, name, None)
+            if func:
+                func()
 
         return callback
 
     def delete(self):
-        """Specialized delete() to deal with QLineEdit vs QTextEdit"""
+        """Specialized delete() to deal with QLineEdit vs. QTextEdit"""
         focus = self.focus('delete')
         if hasattr(focus, 'del_'):
             focus.del_()
@@ -1281,7 +1379,7 @@ def _install_config_actions(context, menu, names_and_shortcuts):
         return
     menu.addSeparator()
     cache = {}
-    for (name, shortcut) in names_and_shortcuts:
+    for name, shortcut in names_and_shortcuts:
         sub_menu, action_name = build_menus(name, menu, cache)
         callback = cmds.run(cmds.RunConfigAction, context, name)
         menu_action = sub_menu.addAction(action_name, callback)

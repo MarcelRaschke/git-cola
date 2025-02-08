@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 from functools import partial
 import errno
 import os
@@ -21,23 +20,25 @@ STATUS = 0
 STDOUT = 1
 STDERR = 2
 
-# Object ID / SHA1-related constants
+# Object ID / SHA-1 / SHA-256-related constants
 # Git's empty tree is a built-in constant object name.
 EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 # Git's diff machinery returns zeroes for modified files whose content exists
 # in the worktree only.
 MISSING_BLOB_OID = '0000000000000000000000000000000000000000'
-# Git's SHA-1 object IDs are 40 characters  long.
+# Git's SHA-1 object IDs are 40 characters long (20 bytes).
+# Git's SHA-256 object IDs are 64 characters long (32 bytes).
 # This will need to change when Git moves away from SHA-1.
 # When that happens we'll have to detect and update this at runtime in
 # order to support both old and new git.
 OID_LENGTH = 40
+OID_LENGTH_SHA256 = 64
 
 _index_lock = threading.Lock()
 
 
-def dashify(s):
-    return s.replace('_', '-')
+def dashify(value):
+    return value.replace('_', '-')
 
 
 def is_git_dir(git_dir):
@@ -57,7 +58,6 @@ def is_git_dir(git_dir):
                 and core.isfile(join(git_dir, 'commondir'))
             )
         ):
-
             result = core.isfile(headref) or (
                 core.islink(headref) and core.readlink(headref).startswith('refs/')
             )
@@ -67,12 +67,12 @@ def is_git_dir(git_dir):
     return result
 
 
-def is_git_file(f):
-    return core.isfile(f) and os.path.basename(f) == '.git'
+def is_git_file(filename):
+    return core.isfile(filename) and os.path.basename(filename) == '.git'
 
 
-def is_git_worktree(d):
-    return is_git_dir(join(d, '.git'))
+def is_git_worktree(dirname):
+    return is_git_dir(join(dirname, '.git'))
 
 
 def is_git_repository(path):
@@ -98,7 +98,7 @@ def read_git_file(path):
     return result
 
 
-class Paths(object):
+class Paths:
     """Git repository paths of interest"""
 
     def __init__(self, git_dir=None, git_file=None, worktree=None, common_dir=None):
@@ -110,45 +110,15 @@ class Paths(object):
         self.common_dir = common_dir
 
     def get(self, path):
-        ceiling_dirs = set()
-        ceiling = core.getenv('GIT_CEILING_DIRECTORIES')
-        if ceiling:
-            ceiling_dirs.update([x for x in ceiling.split(':') if x])
-
-        if path:
-            path = core.abspath(path)
-
+        """Search for git worktrees and bare repositories"""
         if not self.git_dir or not self.worktree:
-            # Search for a .git directory
-            while path:
-                if path in ceiling_dirs:
-                    break
-                if is_git_dir(path):
-                    if not self.git_dir:
-                        self.git_dir = path
-                    basename = os.path.basename(path)
-                    if not self.worktree and basename == '.git':
-                        self.worktree = os.path.dirname(path)
-                # We are either in a bare repository, or someone set GIT_DIR
-                # but did not set GIT_WORK_TREE.
-                if self.git_dir:
-                    if not self.worktree:
-                        basename = os.path.basename(self.git_dir)
-                        if basename == '.git':
-                            self.worktree = os.path.dirname(self.git_dir)
-                        elif path and not is_git_dir(path):
-                            self.worktree = path
-                    break
-                gitpath = join(path, '.git')
-                if is_git_dir(gitpath):
-                    if not self.git_dir:
-                        self.git_dir = gitpath
-                    if not self.worktree:
-                        self.worktree = path
-                    break
-                path, dummy = os.path.split(path)
-                if not dummy:
-                    break
+            ceiling_dirs = set()
+            ceiling = core.getenv('GIT_CEILING_DIRECTORIES')
+            if ceiling:
+                ceiling_dirs.update([x for x in ceiling.split(os.pathsep) if x])
+            if path:
+                path = core.abspath(path)
+            self._search_for_git(path, ceiling_dirs)
 
         if self.git_dir:
             git_dir_path = read_git_file(self.git_dir)
@@ -169,6 +139,38 @@ class Paths(object):
         # usage: Paths().get()
         return self
 
+    def _search_for_git(self, path, ceiling_dirs):
+        """Search for git repositories located at path or above"""
+        while path:
+            if path in ceiling_dirs:
+                break
+            if is_git_dir(path):
+                if not self.git_dir:
+                    self.git_dir = path
+                basename = os.path.basename(path)
+                if not self.worktree and basename == '.git':
+                    self.worktree = os.path.dirname(path)
+            # We are either in a bare repository, or someone set GIT_DIR
+            # but did not set GIT_WORK_TREE.
+            if self.git_dir:
+                if not self.worktree:
+                    basename = os.path.basename(self.git_dir)
+                    if basename == '.git':
+                        self.worktree = os.path.dirname(self.git_dir)
+                    elif path and not is_git_dir(path):
+                        self.worktree = path
+                break
+            gitpath = join(path, '.git')
+            if is_git_dir(gitpath):
+                if not self.git_dir:
+                    self.git_dir = gitpath
+                if not self.worktree:
+                    self.worktree = path
+                break
+            path, dummy = os.path.split(path)
+            if not dummy:
+                break
+
 
 def find_git_directory(path):
     """Perform Git repository discovery"""
@@ -177,18 +179,17 @@ def find_git_directory(path):
     ).get(path)
 
 
-class Git(object):
+class Git:
     """
     The Git class manages communication with the Git binary
     """
 
-    def __init__(self):
+    def __init__(self, worktree=None):
         self.paths = Paths()
 
         self._valid = {}  #: Store the result of is_git_dir() for performance
-        self.set_worktree(core.getcwd())
+        self.set_worktree(worktree or core.getcwd())
 
-    # pylint: disable=no-self-use
     def is_git_repository(self, path):
         return is_git_repository(path)
 
@@ -245,6 +246,7 @@ class Git(object):
     @staticmethod
     def execute(
         command,
+        _add_env=None,
         _cwd=None,
         _decode=True,
         _encoding=None,
@@ -262,6 +264,7 @@ class Git(object):
         :param _cwd: working directory, defaults to the current directory.
         :param _decode: whether to decode output, defaults to True.
         :param _encoding: default encoding, defaults to None (utf-8).
+        :param _readonly: avoid taking the index lock. Assume the command is read-only.
         :param _raw: do not strip trailing whitespace.
         :param _stdin: optional stdin filehandle.
         :returns (status, out, err): exit status, stdout, stderr
@@ -289,13 +292,14 @@ class Git(object):
         try:
             status, out, err = core.run_command(
                 command,
+                add_env=_add_env,
                 cwd=_cwd,
                 encoding=_encoding,
                 stdin=_stdin,
                 stdout=_stdout,
                 stderr=_stderr,
                 no_win32_startupinfo=_no_win32_startupinfo,
-                **extra
+                **extra,
             )
         finally:
             # Let the next thread in
@@ -310,7 +314,7 @@ class Git(object):
 
         cola_trace = GIT_COLA_TRACE
         if cola_trace == 'trace':
-            msg = 'trace: %.3fs: %s' % (elapsed_time, core.list2cmdline(command))
+            msg = f'trace: {elapsed_time:.3f}s: {core.list2cmdline(command)}'
             Interaction.log_status(status, msg, '')
         elif cola_trace == 'full':
             if out or err:
@@ -323,7 +327,7 @@ class Git(object):
                     '# %.3fs: %s -> %d' % (elapsed_time, ' '.join(command), status)
                 )
         elif cola_trace:
-            core.print_stderr('# %.3fs: %s' % (elapsed_time, ' '.join(command)))
+            core.print_stderr('# {:.3f}s: {}'.format(elapsed_time, ' '.join(command)))
 
         # Allow access to the command's status code
         return (status, out, err)
@@ -331,8 +335,9 @@ class Git(object):
     def git(self, cmd, *args, **kwargs):
         # Handle optional arguments prior to calling transform_kwargs
         # otherwise they'll end up in args, which is bad.
-        _kwargs = dict(_cwd=self.getcwd())
+        _kwargs = {'_cwd': self.getcwd()}
         execute_kwargs = (
+            '_add_env',
             '_cwd',
             '_decode',
             '_encoding',
@@ -354,6 +359,8 @@ class Git(object):
             '-c',
             'diff.suppressBlankEmpty=false',
             '-c',
+            'diff.autoRefreshIndex=false',
+            '-c',
             'log.showSignature=false',
             dashify(cmd),
         ]
@@ -362,14 +369,14 @@ class Git(object):
         call.extend(args)
         try:
             result = self.execute(call, **_kwargs)
-        except OSError as e:
-            if WIN32 and e.errno == errno.ENOENT:
-                # see if git exists at all. on win32 it can fail with ENOENT in
-                # case of argv overflow. we should be safe from that but use
+        except OSError as exc:
+            if WIN32 and exc.errno == errno.ENOENT:
+                # see if git exists at all. On win32 it can fail with ENOENT in
+                # case of argv overflow. We should be safe from that but use
                 # defensive coding for the worst-case scenario. On UNIX
                 # we have ENAMETOOLONG but that doesn't exist on Windows.
                 if _git_is_installed():
-                    raise e
+                    raise exc
                 _print_win32_git_hint()
             result = (1, '', "error: unable to execute '%s'" % GIT)
         return result
@@ -377,7 +384,7 @@ class Git(object):
 
 def _git_is_installed():
     """Return True if git is installed"""
-    # On win32 Git commands can fail with ENOENT in case of argv overflow. we
+    # On win32 Git commands can fail with ENOENT in case of argv overflow. We
     # should be safe from that but use defensive coding for the worst-case
     # scenario. On UNIX we have ENAMETOOLONG but that doesn't exist on
     # Windows.
@@ -407,20 +414,20 @@ def transform_kwargs(**kwargs):
     args = []
     types_to_stringify = (ustr, float, str) + int_types
 
-    for k, v in kwargs.items():
+    for k, value in kwargs.items():
         if len(k) == 1:
             dashes = '-'
-            eq = ''
+            equals = ''
         else:
             dashes = '--'
-            eq = '='
+            equals = '='
         # isinstance(False, int) is True, so we have to check bool first
-        if isinstance(v, bool):
-            if v:
-                args.append('%s%s' % (dashes, dashify(k)))
+        if isinstance(value, bool):
+            if value:
+                args.append(f'{dashes}{dashify(k)}')
             # else: pass  # False is ignored; flag=False inhibits --flag
-        elif isinstance(v, types_to_stringify):
-            args.append('%s%s%s%s' % (dashes, dashify(k), eq, v))
+        elif isinstance(value, types_to_stringify):
+            args.append(f'{dashes}{dashify(k)}{equals}{value}')
 
     return args
 

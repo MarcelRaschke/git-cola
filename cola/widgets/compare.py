@@ -1,10 +1,9 @@
 """Provides dialogs for comparing branches and commits."""
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
 
-from .. import cmds
+from .. import difftool
 from .. import gitcmds
 from .. import icons
 from .. import qtutils
@@ -88,8 +87,8 @@ class CompareBranchesDialog(standard.Dialog):
             defs.no_margin,
             defs.button_spacing,
             (self.diff_files, 0, 0, 1, 4),
-            (self.button_spacer, 1, 1, 1, 1),
-            (self.button_close, 1, 0, 1, 1),
+            (self.button_spacer, 1, 0, 1, 1),
+            (self.button_close, 1, 2, 1, 1),
             (self.button_compare, 1, 3, 1, 1),
         )
         self.bottom_widget.setLayout(self.bottom_grid_layout)
@@ -104,7 +103,6 @@ class CompareBranchesDialog(standard.Dialog):
         connect_button(self.button_close, self.accept)
         connect_button(self.button_compare, self.compare)
 
-        # pylint: disable=no-member
         self.diff_files.itemDoubleClicked.connect(lambda _: self.compare())
         self.left_combo.currentIndexChanged.connect(
             lambda x: self.update_combo_boxes(left=True)
@@ -112,7 +110,6 @@ class CompareBranchesDialog(standard.Dialog):
         self.right_combo.currentIndexChanged.connect(
             lambda x: self.update_combo_boxes(left=False)
         )
-
         self.left_list.itemSelectionChanged.connect(self.update_diff_files)
         self.right_list.itemSelectionChanged.connect(self.update_diff_files)
 
@@ -195,22 +192,19 @@ class CompareBranchesDialog(standard.Dialog):
             tracked_branch = gitcmds.tracked_branch(context)
             if tracked_branch:
                 return gitcmds.merge_base(context, branch, tracked_branch)
-            else:
-                remote_branches = gitcmds.branch_list(context, remote=True)
-                remote_branch = 'origin/%s' % branch
-                if remote_branch in remote_branches:
-                    return gitcmds.merge_base(context, branch, remote_branch)
+            remote_branches = gitcmds.branch_list(context, remote=True)
+            remote_branch = 'origin/%s' % branch
+            if remote_branch in remote_branches:
+                return gitcmds.merge_base(context, branch, remote_branch)
 
-                if 'origin/main' in remote_branches:
-                    return gitcmds.merge_base(context, branch, 'origin/main')
+            if 'origin/main' in remote_branches:
+                return gitcmds.merge_base(context, branch, 'origin/main')
 
-                if 'origin/master' in remote_branches:
-                    return gitcmds.merge_base(context, branch, 'origin/master')
-
-                return 'HEAD'
-        else:
-            # Compare against the remote branch
-            return branch
+            if 'origin/master' in remote_branches:
+                return gitcmds.merge_base(context, branch, 'origin/master')
+            return 'HEAD'
+        # Compare against the remote branch
+        return branch
 
     def update_combo_boxes(self, left=False):
         """Update listwidgets from the combobox selection
@@ -259,4 +253,4 @@ class CompareBranchesDialog(standard.Dialog):
         else:
             left, right = self.start, self.end
         context = self.context
-        cmds.difftool_launch(context, left=left, right=right, paths=[filename])
+        difftool.difftool_launch(context, left=left, right=right, paths=[filename])

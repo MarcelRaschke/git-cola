@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 import sys
 
@@ -6,11 +5,7 @@ from . import core
 from .i18n import N_
 
 
-# The dependency injection calls to install() in ColaApplication's constructor
-# triggers method-already-defined pylint warnings.  Silence that warning.
-#
-# pylint: disable=function-redefined
-class Interaction(object):
+class Interaction:
     """Prompts the user and answers questions"""
 
     VERBOSE = bool(os.getenv('GIT_COLA_VERBOSE'))
@@ -36,9 +31,10 @@ class Interaction(object):
 
     @staticmethod
     def format_command_status(cmd, status):
-        return N_('"%(command)s" returned exit status %(status)d') % dict(
-            command=cmd, status=status
-        )
+        return N_('"%(command)s" returned exit status %(status)d') % {
+            'command': cmd,
+            'status': status,
+        }
 
     @staticmethod
     def format_out_err(out, err):
@@ -87,7 +83,6 @@ class Interaction(object):
         default=True,
         cancel_text=None,
     ):
-
         cancel_text = cancel_text or 'Cancel'
         icon = icon or '?'
 

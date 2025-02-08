@@ -1,8 +1,6 @@
 """Test the cmds module"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 from cola import cmds
-from cola.compat import uchr
 
 from .helper import Mock, patch
 
@@ -17,8 +15,8 @@ def test_Commit_strip_comments():
 
 def test_commit_strip_comments_unicode():
     """Ensure that unicode is preserved in stripped commit messages"""
-    msg = uchr(0x1234) + '\n\n#comment\nbody'
-    expect = uchr(0x1234) + '\n\nbody\n'
+    msg = chr(0x1234) + '\n\n#comment\nbody'
+    expect = chr(0x1234) + '\n\nbody\n'
     actual = cmds.Commit.strip_comments(msg)
     assert expect == actual
 

@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from qtpy import QtCore
 from qtpy import QtWidgets
 
@@ -7,7 +5,6 @@ from .. import icons
 from . import standard
 
 
-# pylint: disable=too-many-ancestors
 class FileTree(standard.TreeWidget):
     def __init__(self, parent=None):
         standard.TreeWidget.__init__(self, parent=parent)

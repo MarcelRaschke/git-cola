@@ -1,8 +1,6 @@
 """Miscellaneous utility functions"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import copy
 import os
-import random
 import re
 import shlex
 import sys
@@ -12,8 +10,6 @@ import traceback
 
 from . import core
 from . import compat
-
-random.seed(hash(time.time()))
 
 
 def asint(obj, default=0):
@@ -25,9 +21,9 @@ def asint(obj, default=0):
     return value
 
 
-def clamp(value, lo, hi):
+def clamp(value, low, high):
     """Clamp a value to the specified range"""
-    return min(hi, max(lo, value))
+    return min(high, max(low, value))
 
 
 def epoch_millis():
@@ -49,25 +45,26 @@ def add_parents(paths):
     return all_paths
 
 
-def format_exception(e):
+def format_exception(exc):
+    """Format an exception object for display"""
     exc_type, exc_value, exc_tb = sys.exc_info()
     details = traceback.format_exception(exc_type, exc_value, exc_tb)
     details = '\n'.join(map(core.decode, details))
-    if hasattr(e, 'msg'):
-        msg = e.msg
+    if hasattr(exc, 'msg'):
+        msg = exc.msg
     else:
-        msg = core.decode(repr(e))
+        msg = core.decode(repr(exc))
     return (msg, details)
 
 
-def sublist(a, b):
+def sublist(values, remove):
     """Subtracts list b from list a and returns the resulting list."""
     # conceptually, c = a - b
-    c = []
-    for item in a:
-        if item not in b:
-            c.append(item)
-    return c
+    result = []
+    for item in values:
+        if item not in remove:
+            result.append(item)
+    return result
 
 
 __grep_cache = {}
@@ -228,7 +225,7 @@ def select_directory(paths):
         if core.isdir(path):
             return path
 
-    return os.path.dirname(paths[0])
+    return os.path.dirname(paths[0]) or core.getcwd()
 
 
 def strip_prefix(prefix, string):
@@ -236,13 +233,6 @@ def strip_prefix(prefix, string):
     start with prefix."""
     assert string.startswith(prefix)
     return string[len(prefix) :]
-
-
-def sanitize(s):
-    """Removes shell metacharacters from a string."""
-    for c in """ \t!@#$%^&*()\\;,<>"'[]{}~|""":
-        s = s.replace(c, '_')
-    return s
 
 
 def tablength(word, tabwidth):
@@ -255,61 +245,78 @@ def tablength(word, tabwidth):
     return len(word.replace('\t', '')) + word.count('\t') * tabwidth
 
 
-def _shell_split_py2(s):
+def _shell_split_py2(value):
     """Python2 requires bytes inputs to shlex.split().  Returns [unicode]"""
     try:
-        result = shlex.split(core.encode(s))
+        result = shlex.split(core.encode(value))
     except ValueError:
-        result = core.encode(s).strip().split()
-    # Decode to unicode strings
+        result = core.encode(value).strip().split()
+    # Decode to Unicode strings
     return [core.decode(arg) for arg in result]
 
 
-def _shell_split_py3(s):
-    """Python3 requires unicode inputs to shlex.split().  Converts to unicode"""
+def _shell_split_py3(value):
+    """Python3 requires Unicode inputs to shlex.split().  Convert to Unicode"""
     try:
-        result = shlex.split(s)
+        result = shlex.split(value)
     except ValueError:
-        result = core.decode(s).strip().split()
-    # Already unicode
+        result = core.decode(value).strip().split()
+    # Already Unicode
     return result
 
 
-def shell_split(s):
+def shell_split(value):
     if compat.PY2:
         # Encode before calling split()
-        values = _shell_split_py2(s)
+        values = _shell_split_py2(value)
     else:
         # Python3 does not need the encode/decode dance
-        values = _shell_split_py3(s)
+        values = _shell_split_py3(value)
     return values
 
 
 def tmp_filename(label, suffix=''):
     label = 'git-cola-' + label.replace('/', '-').replace('\\', '-')
-    fd = tempfile.NamedTemporaryFile(prefix=label + '-', suffix=suffix, delete=False)
-    fd.close()
-    return fd.name
+    with tempfile.NamedTemporaryFile(
+        prefix=label + '-', suffix=suffix, delete=False
+    ) as handle:
+        return handle.name
 
 
 def is_linux():
-    """Is this a linux machine?"""
+    """Is this a Linux machine?"""
     return sys.platform.startswith('linux')
 
 
 def is_debian():
-    """Is it debian?"""
+    """Is this a Debian/Linux machine?"""
     return os.path.exists('/usr/bin/apt-get')
 
 
 def is_darwin():
-    """Return True on OSX."""
+    """Is this a macOS machine?"""
     return sys.platform == 'darwin'
 
 
 def is_win32():
     """Return True on win32"""
-    return sys.platform == 'win32' or sys.platform == 'cygwin'
+    return sys.platform in {'win32', 'cygwin'}
+
+
+def launch_default_app(paths):
+    """Execute the default application on the specified paths"""
+    if is_win32():
+        for path in paths:
+            if hasattr(os, 'startfile'):
+                os.startfile(os.path.abspath(path))
+        return
+
+    if is_darwin():
+        launcher = 'open'
+    else:
+        launcher = 'xdg-open'
+
+    core.fork([launcher] + paths)
 
 
 def expandpath(path):
@@ -320,7 +327,7 @@ def expandpath(path):
     return path
 
 
-class Group(object):
+class Group:
     """Operate on a collection of objects as a single unit"""
 
     def __init__(self, *members):
@@ -338,7 +345,7 @@ class Group(object):
         return relay
 
 
-class Proxy(object):
+class Proxy:
     """Wrap an object and override attributes"""
 
     def __init__(self, obj, **overrides):
@@ -350,8 +357,8 @@ class Proxy(object):
         return getattr(self._obj, name)
 
 
-def slice_fn(input_items, map_fn):
-    """Slice input_items and call map_fn over every slice
+def slice_func(input_items, map_func):
+    """Slice input_items and call `map_func` over every slice
 
     This exists because of "errno: Argument list too long"
 
@@ -389,7 +396,7 @@ def slice_fn(input_items, map_fn):
 
     items = copy.copy(input_items)
     while items:
-        stat, out, err = map_fn(items[:size])
+        stat, out, err = map_func(items[:size])
         if stat < 0:
             status = min(stat, status)
         else:
@@ -401,16 +408,34 @@ def slice_fn(input_items, map_fn):
     return (status, '\n'.join(outs), '\n'.join(errs))
 
 
-class seq(object):
+class Sequence:
     def __init__(self, sequence):
-        self.seq = sequence
+        self.sequence = sequence
 
     def index(self, item, default=-1):
         try:
-            idx = self.seq.index(item)
+            idx = self.sequence.index(item)
         except ValueError:
             idx = default
         return idx
 
     def __getitem__(self, idx):
-        return self.seq[idx]
+        return self.sequence[idx]
+
+
+def catch_runtime_error(func, *args, **kwargs):
+    """Run the function safely.
+
+    Catch RuntimeError to avoid tracebacks during application shutdown.
+
+    """
+    # Signals and callbacks can sometimes get triggered during application shutdown.
+    # This can happen when exiting while background tasks are still processing.
+    # Guard against this by making this operation a no-op.
+    try:
+        valid = True
+        result = func(*args, **kwargs)
+    except RuntimeError:
+        valid = False
+        result = None
+    return (valid, result)

@@ -1,4 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 from functools import partial
 
@@ -28,9 +27,9 @@ def clone(context, spawn=True, show=True):
 
 def clone_repo(context, show, progress, finish, spawn):
     """Clone a repository asynchronously with progress animation"""
-    fn = partial(start_clone_task, context, progress, finish, spawn)
+    func = partial(start_clone_task, context, progress, finish, spawn)
     prompt = prompt_for_clone(context, show=show)
-    prompt.result.connect(fn)
+    prompt.result.connect(func)
     return prompt
 
 
@@ -92,7 +91,6 @@ class CloneTask(qtutils.Task):
 
 
 class Clone(standard.Dialog):
-
     # Signal binding for returning the input data
     result = QtCore.Signal(object, object, bool, bool)
 
@@ -113,7 +111,7 @@ class Clone(standard.Dialog):
 
         # Initialize submodules
         self.submodules = qtutils.checkbox(
-            text=N_('Inititalize submodules'), checked=False
+            text=N_('Initialize submodules'), checked=False
         )
 
         # Reduce commit history
@@ -139,8 +137,8 @@ class Clone(standard.Dialog):
             defs.button_spacing,
             self.shallow,
             qtutils.STRETCH,
-            self.ok_button,
             self.close_button,
+            self.ok_button,
         )
 
         self.main_layout = qtutils.vbox(
@@ -150,7 +148,6 @@ class Clone(standard.Dialog):
 
         qtutils.connect_button(self.close_button, self.close)
         qtutils.connect_button(self.ok_button, self.prepare_to_clone)
-        # pylint: disable=no-member
         self.url.textChanged.connect(lambda x: self.update_actions())
 
         self.init_state(context.settings, self.resize, 720, 200)
@@ -195,7 +192,7 @@ class Clone(standard.Dialog):
 
         # Prompt the user for a directory to use as the parent directory
         msg = N_('Select a parent directory for the new clone')
-        dirname = qtutils.opendir_dialog(msg, self.model.getcwd())
+        dirname = qtutils.opendir_dialog(msg, os.path.dirname(self.model.getcwd()))
         if not dirname:
             return
         count = 1
@@ -206,7 +203,7 @@ class Clone(standard.Dialog):
             msg = N_('"%s" already exists, cola will create a new directory') % destdir
             Interaction.information(N_('Directory Exists'), msg)
 
-        # Make sure the new destdir doesn't exist
+        # Make sure the directory doesn't exist
         while core.exists(destdir):
             destdir = olddestdir + str(count)
             count += 1

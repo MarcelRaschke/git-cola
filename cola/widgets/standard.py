@@ -1,6 +1,6 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-import time
 from functools import partial
+import os
+import time
 
 from qtpy import QtCore
 from qtpy import QtGui
@@ -22,7 +22,7 @@ from .. import utils
 from . import defs
 
 
-class WidgetMixin(object):
+class WidgetMixin:
     """Mix-in for common utilities and serialization of widget state"""
 
     closed = Signal(QtWidgets.QWidget)
@@ -43,14 +43,12 @@ class WidgetMixin(object):
         self.move(x, y)
 
     def resize_to_desktop(self):
-        desktop = QtWidgets.QApplication.instance().desktop()
-        width = desktop.width()
-        height = desktop.height()
+        width, height = qtutils.desktop_size()
         if utils.is_darwin():
             self.resize(width, height)
         else:
             shown = self.isVisible()
-            # earlier show() fools Windows focus stealing prevention. the main
+            # earlier show() fools Windows focus stealing prevention. The main
             # window is blocked for the duration of "git rebase" and we don't
             # want to present a blocked window with git-cola-sequence-editor
             # hidden somewhere.
@@ -64,17 +62,21 @@ class WidgetMixin(object):
         return self.__class__.__name__.lower()
 
     def save_state(self, settings=None):
+        """Save tool settings to the ~/.config/git-cola/settings file"""
         save = True
+        sync = True
         context = getattr(self, 'context', None)
         if context:
             cfg = context.cfg
             save = cfg.get('cola.savewindowsettings', default=True)
+            sync = cfg.get('cola.sync', default=True)
         if save:
             if settings is None:
                 settings = Settings.read()
-            settings.save_gui_state(self)
+            settings.save_gui_state(self, sync=sync)
 
     def restore_state(self, settings=None):
+        """Read and apply saved tool settings"""
         if settings is None:
             settings = Settings.read()
         state = settings.get_gui_state(self)
@@ -85,8 +87,7 @@ class WidgetMixin(object):
         return result
 
     def apply_state(self, state):
-        """Imports data for view save/restore"""
-
+        """Import data for view save/restore"""
         width = utils.asint(state.get('width'))
         height = utils.asint(state.get('height'))
         x = utils.asint(state.get('x'))
@@ -119,14 +120,17 @@ class WidgetMixin(object):
         return state
 
     def save_settings(self, settings=None):
+        """Save tool state using the specified settings backend"""
         return self.save_state(settings=settings)
 
     def closeEvent(self, event):
+        """Save settings when the top-level widget is closed"""
         self.save_settings()
         self.closed.emit(self)
         self.Base.closeEvent(self, event)
 
     def init_size(self, parent=None, settings=None, width=0, height=0):
+        """Set a tool's initial size"""
         if not width:
             width = defs.dialog_w
         if not height:
@@ -158,7 +162,7 @@ class MainWindowMixin(WidgetMixin):
     def init_state(self, settings, callback, *args, **kwargs):
         """Save the initial state before calling the parent initializer"""
         self.default_state = self.saveState(self.widget_version)
-        super(MainWindowMixin, self).init_state(settings, callback, *args, **kwargs)
+        super().init_state(settings, callback, *args, **kwargs)
 
     def export_state(self):
         """Exports data for save/restore"""
@@ -176,7 +180,12 @@ class MainWindowMixin(WidgetMixin):
             else:
                 settings = context.settings
                 settings.load()
-            settings.add_recent(core.getcwd(), prefs.maxrecent(context))
+            try:
+                cwd = core.getcwd()
+            except FileNotFoundError:
+                pass
+            else:
+                settings.add_recent(cwd, prefs.maxrecent(context))
         return WidgetMixin.save_settings(self, settings=settings)
 
     def apply_state(self, state):
@@ -195,7 +204,7 @@ class MainWindowMixin(WidgetMixin):
 
         self.lock_layout = state.get('lock_layout', self.lock_layout)
         self.update_dockwidget_lock_state()
-        self.update_dockwidget_tooltips()
+        self.update_dockwidget_floating_state()
 
         return result
 
@@ -208,7 +217,7 @@ class MainWindowMixin(WidgetMixin):
 
     def update_dockwidget_lock_state(self):
         if self.lock_layout:
-            features = QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetFloatable
+            features = QDockWidget.DockWidgetClosable
         else:
             features = (
                 QDockWidget.DockWidgetClosable
@@ -216,20 +225,20 @@ class MainWindowMixin(WidgetMixin):
                 | QDockWidget.DockWidgetMovable
             )
         for widget in self.dockwidgets:
-            widget.titleBarWidget().update_tooltips()
             widget.setFeatures(features)
+            widget.titleBarWidget().update_floating()
 
-    def update_dockwidget_tooltips(self):
+    def update_dockwidget_floating_state(self):
+        """Update the floating state for all dock widgets"""
         for widget in self.dockwidgets:
-            widget.titleBarWidget().update_tooltips()
+            widget.titleBarWidget().update_floating()
 
 
-# pylint: disable=too-many-ancestors
 class ListWidget(QtWidgets.QListWidget):
     """QListWidget with vim j/k navigation hotkeys"""
 
     def __init__(self, parent=None):
-        super(ListWidget, self).__init__(parent)
+        super().__init__(parent)
 
         self.up_action = qtutils.add_action(
             self,
@@ -272,7 +281,7 @@ class ListWidget(QtWidgets.QListWidget):
             self.setCurrentItem(new_item)
 
 
-class TreeMixin(object):
+class TreeMixin:
     def __init__(self, widget, Base):
         self.widget = widget
         self.Base = Base
@@ -303,23 +312,9 @@ class TreeMixin(object):
         was_collapsed = not was_expanded
 
         # Vim keybindings...
-        # Rewrite the event before marshalling to QTreeView.event()
-        key = event.key()
+        event = _create_vim_navigation_key_event(event)
 
-        # Remap 'H' to 'Left'
-        if key == Qt.Key_H:
-            event = QtGui.QKeyEvent(event.type(), Qt.Key_Left, event.modifiers())
-        # Remap 'J' to 'Down'
-        elif key == Qt.Key_J:
-            event = QtGui.QKeyEvent(event.type(), Qt.Key_Down, event.modifiers())
-        # Remap 'K' to 'Up'
-        elif key == Qt.Key_K:
-            event = QtGui.QKeyEvent(event.type(), Qt.Key_Up, event.modifiers())
-        # Remap 'L' to 'Right'
-        elif key == Qt.Key_L:
-            event = QtGui.QKeyEvent(event.type(), Qt.Key_Right, event.modifiers())
-
-        # Re-read the event key to take the remappings into account
+        # Read the updated event key to take the mappings into account
         key = event.key()
         if key == Qt.Key_Up:
             idxs = widget.selectedIndexes()
@@ -346,14 +341,12 @@ class TreeMixin(object):
 
         # Process non-root entries with valid parents only.
         elif key == Qt.Key_Left and index.parent().isValid():
-
             # File entries have rowCount() == 0
             model = widget.model()
-            if (
-                hasattr(model, 'itemFromIndex')
-                and model.itemFromIndex(index).rowCount() == 0
-            ):
-                widget.setCurrentIndex(index.parent())
+            if hasattr(model, 'itemFromIndex'):
+                item = model.itemFromIndex(index)
+                if hasattr(item, 'rowCount') and item.rowCount() == 0:
+                    widget.setCurrentIndex(index.parent())
 
             # Otherwise, do this for collapsed directories only
             elif was_collapsed:
@@ -389,12 +382,11 @@ class TreeMixin(object):
         widget = self.widget
         if hasattr(widget, 'selectedItems'):
             return widget.selectedItems()
+        if hasattr(widget, 'itemFromIndex'):
+            item_from_index = widget.itemFromIndex
         else:
-            if hasattr(widget, 'itemFromIndex'):
-                item_from_index = widget.itemFromIndex
-            else:
-                item_from_index = widget.model().itemFromIndex
-            return [item_from_index(i) for i in widget.selectedIndexes()]
+            item_from_index = widget.model().itemFromIndex
+        return [item_from_index(i) for i in widget.selectedIndexes()]
 
     def selected_item(self):
         """Return the first selected item"""
@@ -431,6 +423,24 @@ class TreeMixin(object):
                 widget.setColumnWidth(idx, value)
 
 
+def _create_vim_navigation_key_event(event):
+    """Support minimal Vim-like keybindings by rewriting the QKeyEvents"""
+    key = event.key()
+    # Remap 'H' to 'Left'
+    if key == Qt.Key_H:
+        event = QtGui.QKeyEvent(event.type(), Qt.Key_Left, event.modifiers())
+    # Remap 'J' to 'Down'
+    elif key == Qt.Key_J:
+        event = QtGui.QKeyEvent(event.type(), Qt.Key_Down, event.modifiers())
+    # Remap 'K' to 'Up'
+    elif key == Qt.Key_K:
+        event = QtGui.QKeyEvent(event.type(), Qt.Key_Up, event.modifiers())
+    # Remap 'L' to 'Right'
+    elif key == Qt.Key_L:
+        event = QtGui.QKeyEvent(event.type(), Qt.Key_Right, event.modifiers())
+    return event
+
+
 class DraggableTreeMixin(TreeMixin):
     """A tree widget with internal drag+drop reordering of rows
 
@@ -439,7 +449,7 @@ class DraggableTreeMixin(TreeMixin):
     """
 
     def __init__(self, widget, Base):
-        super(DraggableTreeMixin, self).__init__(widget, Base)
+        super().__init__(widget, Base)
 
         self._inner_drag = False
         widget.setAcceptDrops(True)
@@ -525,9 +535,8 @@ class Dialog(WidgetMixin, QtWidgets.QDialog):
         self.dispose()
         return self.Base.reject(self)
 
-    # pylint: disable=no-self-use
     def dispose(self):
-        """Extension method for model deregistration in sub-classes"""
+        """Extension method for model de-registration in sub-classes"""
         return
 
     def close(self):
@@ -549,7 +558,6 @@ class MainWindow(MainWindowMixin, QtWidgets.QMainWindow):
         MainWindowMixin.__init__(self)
 
 
-# pylint: disable=too-many-ancestors
 class TreeView(QtWidgets.QTreeView):
     Mixin = TreeMixin
 
@@ -583,7 +591,6 @@ class TreeView(QtWidgets.QTreeView):
         return self._mixin.set_column_widths(widths)
 
 
-# pylint: disable=too-many-ancestors
 class TreeWidget(QtWidgets.QTreeWidget):
     Mixin = TreeMixin
 
@@ -592,7 +599,7 @@ class TreeWidget(QtWidgets.QTreeWidget):
     index_about_to_change = Signal()
 
     def __init__(self, parent=None):
-        super(TreeWidget, self).__init__(parent)
+        super().__init__(parent)
         self._mixin = self.Mixin(self, QtWidgets.QTreeWidget)
 
     def keyPressEvent(self, event):
@@ -617,7 +624,6 @@ class TreeWidget(QtWidgets.QTreeWidget):
         return self._mixin.set_column_widths(widths)
 
 
-# pylint: disable=too-many-ancestors
 class DraggableTreeWidget(TreeWidget):
     Mixin = DraggableTreeMixin
     items_moved = Signal(object)
@@ -647,52 +653,60 @@ class ProgressDialog(QtWidgets.QProgressDialog):
 
     def __init__(self, title, label, parent):
         QtWidgets.QProgressDialog.__init__(self, parent)
+        self._parent = parent
         if parent is not None:
             self.setWindowModality(Qt.WindowModal)
+
+        self.animation_thread = ProgressAnimationThread(label, self)
+        self.animation_thread.updated.connect(self.set_text, type=Qt.QueuedConnection)
+
         self.reset()
         self.setRange(0, 0)
         self.setMinimumDuration(0)
         self.setCancelButton(None)
         self.setFont(qtutils.default_monospace_font())
-        self.thread = ProgressAnimationThread(label, self)
-        self.thread.updated.connect(self.refresh, type=Qt.QueuedConnection)
-
         self.set_details(title, label)
 
     def set_details(self, title, label):
+        """Update the window title and progress label"""
         self.setWindowTitle(title)
         self.setLabelText(label + '     ')
-        self.thread.set_text(label)
+        self.animation_thread.set_text(label)
 
-    def refresh(self, txt):
+    def set_text(self, txt):
+        """Set the label text"""
         self.setLabelText(txt)
 
     def keyPressEvent(self, event):
+        """Customize keyPressEvent to remove the ESC key cancel feature"""
         if event.key() != Qt.Key_Escape:
-            super(ProgressDialog, self).keyPressEvent(event)
+            super().keyPressEvent(event)
 
-    def show(self):
+    def start(self):
+        """Start the animation thread and use a wait cursor"""
+        self.show()
         QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)
-        super(ProgressDialog, self).show()
-        self.thread.start()
+        self.animation_thread.start()
 
-    def hide(self):
+    def stop(self):
+        """Stop the animation thread and restore the normal cursor"""
+        self.animation_thread.stop()
+        self.animation_thread.wait()
         QtWidgets.QApplication.restoreOverrideCursor()
-        self.thread.stop()
-        self.thread.wait()
-        super(ProgressDialog, self).hide()
+        self.hide()
 
 
 class ProgressAnimationThread(QtCore.QThread):
     """Emits a pseudo-animated text stream for progress bars"""
 
+    # The updated signal is emitted on each tick.
     updated = Signal(object)
 
-    def __init__(self, txt, parent, timeout=0.1):
+    def __init__(self, txt, parent, sleep_time=0.1):
         QtCore.QThread.__init__(self, parent)
         self.running = False
         self.txt = txt
-        self.timeout = timeout
+        self.sleep_time = sleep_time
         self.symbols = [
             '.  ..',
             '..  .',
@@ -703,20 +717,87 @@ class ProgressAnimationThread(QtCore.QThread):
         self.idx = -1
 
     def set_text(self, txt):
+        """Set the text prefix"""
         self.txt = txt
 
-    def cycle(self):
+    def tick(self):
+        """Tick to the next animated text value"""
         self.idx = (self.idx + 1) % len(self.symbols)
         return self.txt + self.symbols[self.idx]
 
     def stop(self):
+        """Stop the animation thread"""
         self.running = False
 
     def run(self):
+        """Emit ticks until stopped"""
         self.running = True
         while self.running:
-            self.updated.emit(self.cycle())
-            time.sleep(self.timeout)
+            self.updated.emit(self.tick())
+            time.sleep(self.sleep_time)
+
+
+class ProgressTickThread(QtCore.QThread):
+    """Emits an int stream for progress bars"""
+
+    # The updated signal emits progress tick values.
+    updated = Signal(int)
+    # The activated signal is emitted when the progress bar is displayed.
+    activated = Signal()
+
+    def __init__(
+        self,
+        parent,
+        maximum,
+        start_time=1.0,
+        sleep_time=0.05,
+    ):
+        QtCore.QThread.__init__(self, parent)
+        self.running = False
+        self.sleep_time = sleep_time
+        self.maximum = maximum
+        self.start_time = start_time
+        self.value = 0
+        self.step = 1
+
+    def tick(self):
+        """Cycle to the next tick value
+
+        Returned values are in the inclusive (0, maximum + 1) range.
+        """
+        self.value = (self.value + self.step) % (self.maximum + 1)
+        if self.value == self.maximum:
+            self.step = -1
+        elif self.value == 0:
+            self.step = 1
+        return self.value
+
+    def stop(self):
+        """Stop the tick thread and reset to the initial state"""
+        self.running = False
+        self.value = 0
+        self.step = 1
+
+    def run(self):
+        """Start the tick thread
+
+        The progress bar will not be activated until after the start_time
+        interval has elapsed.
+        """
+        initial_time = time.time()
+        active = False
+        self.running = True
+        self.value = 0
+        self.step = 1
+        while self.running:
+            if active:
+                self.updated.emit(self.tick())
+            else:
+                now = time.time()
+                if self.start_time < (now - initial_time):
+                    active = True
+                    self.activated.emit()
+            time.sleep(self.sleep_time)
 
 
 class SpinBox(QtWidgets.QSpinBox):
@@ -733,11 +814,54 @@ class SpinBox(QtWidgets.QSpinBox):
             self.setSingleStep(step)
         if value is not None:
             self.setValue(value)
-
-        font = self.font()
-        metrics = QtGui.QFontMetrics(font)
-        width = max(self.minimumWidth(), metrics.width('XXXXXX'))
+        text_width = qtutils.text_width(self.font(), 'MMMMMM')
+        width = max(self.minimumWidth(), text_width)
         self.setMinimumWidth(width)
+
+
+class DirectoryPathLineEdit(QtWidgets.QWidget):
+    """A combined line edit and file browser button"""
+
+    def __init__(self, path, parent):
+        QtWidgets.QWidget.__init__(self, parent)
+
+        self.line_edit = QtWidgets.QLineEdit()
+        self.line_edit.setText(path)
+
+        self.browse_button = qtutils.create_button(
+            tooltip=N_('Select directory'), icon=icons.folder()
+        )
+        layout = qtutils.hbox(
+            defs.no_margin,
+            defs.spacing,
+            self.browse_button,
+            self.line_edit,
+        )
+        self.setLayout(layout)
+
+        qtutils.connect_button(self.browse_button, self._select_directory)
+
+    def set_value(self, value):
+        """Set the path value"""
+        self.line_edit.setText(value)
+
+    def value(self):
+        """Return the current path value"""
+        return self.line_edit.text().strip()
+
+    def _select_directory(self):
+        """Open a file browser and select a directory"""
+        output_dir = qtutils.opendir_dialog(N_('Select directory'), self.value())
+        if not output_dir:
+            return
+        # Make the directory relative only if it the current directory or
+        # or subdirectory from the current directory.
+        current_dir = core.getcwd()
+        if output_dir == current_dir:
+            output_dir = '.'
+        elif output_dir.startswith(current_dir + os.sep):
+            output_dir = os.path.relpath(output_dir)
+        self.set_value(output_dir)
 
 
 def export_header_columns(widget, state):
@@ -786,7 +910,6 @@ class MessageBox(Dialog):
         cancel_text=None,
         cancel_icon=None,
     ):
-
         Dialog.__init__(self, parent=parent)
 
         if parent:
@@ -900,6 +1023,32 @@ class MessageBox(Dialog):
         self.show()
         return self.exec_()
 
+    def apply_state(self, state):
+        """Imports data for view save/restore"""
+        desktop_width, desktop_height = qtutils.desktop_size()
+        width = min(desktop_width, utils.asint(state.get('width')))
+        height = min(desktop_height, utils.asint(state.get('height')))
+        x = min(desktop_width, utils.asint(state.get('x')))
+        y = min(desktop_height, utils.asint(state.get('y')))
+        result = False
+
+        if width and height:
+            self.resize(width, height)
+            self.move(x, y)
+            result = True
+
+        return result
+
+    def export_state(self):
+        """Exports data for view save/restore"""
+        desktop_width, desktop_height = qtutils.desktop_size()
+        state = {}
+        state['width'] = min(desktop_width, self.width())
+        state['height'] = min(desktop_height, self.height())
+        state['x'] = min(desktop_width, self.x())
+        state['y'] = min(desktop_height, self.y())
+        return state
+
 
 def confirm(
     title,
@@ -971,6 +1120,57 @@ def information(title, message=None, details=None, informative_text=None):
 def progress(title, text, parent):
     """Create a new ProgressDialog"""
     return ProgressDialog(title, text, parent)
+
+
+class ProgressBar(QtWidgets.QProgressBar):
+    """An indeterminate progress bar with animated scrolling"""
+
+    def __init__(self, parent, maximum, hide=(), disable=(), visible=False):
+        super().__init__(parent)
+        self.setTextVisible(False)
+        self.setMaximum(maximum)
+        if not visible:
+            self.setVisible(False)
+        self.progress_thread = ProgressTickThread(self, maximum)
+        self.progress_thread.updated.connect(self.setValue, type=Qt.QueuedConnection)
+        self.progress_thread.activated.connect(self.activate, type=Qt.QueuedConnection)
+        self._widgets_to_hide = hide
+        self._widgets_to_disable = disable
+
+    def start(self):
+        """Start the progress tick thread"""
+        QtWidgets.QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        for widget in self._widgets_to_disable:
+            widget.setEnabled(False)
+
+        self.progress_thread.start()
+
+    def activate(self):
+        """Hide widgets and display the progress bar"""
+        for widget in self._widgets_to_hide:
+            widget.hide()
+        self.show()
+
+    def stop(self):
+        """Stop the progress tick thread, re-enable and display widgets"""
+        self.progress_thread.stop()
+        self.progress_thread.wait()
+
+        for widget in self._widgets_to_disable:
+            widget.setEnabled(True)
+
+        self.hide()
+        for widget in self._widgets_to_hide:
+            widget.show()
+
+        QtWidgets.QApplication.restoreOverrideCursor()
+
+
+def progress_bar(parent, maximum=10, hide=(), disable=()):
+    """Return a text-less progress bar"""
+    widget = ProgressBar(parent, maximum, hide=hide, disable=disable)
+    return widget
 
 
 def question(title, text, default=True, logo=None):

@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import, unicode_literals
-
 from qtpy import QtWidgets
 from qtpy.QtCore import Qt
 
@@ -109,13 +107,13 @@ class Merge(standard.Dialog):
         self.buttonlayt = qtutils.hbox(
             defs.no_margin,
             defs.button_spacing,
-            self.button_close,
-            qtutils.STRETCH,
+            self.button_viz,
             self.checkbox_squash,
             self.checkbox_noff,
             self.checkbox_commit,
             self.checkbox_sign,
-            self.button_viz,
+            qtutils.STRETCH,
+            self.button_close,
             self.button_merge,
         )
 
@@ -130,7 +128,6 @@ class Merge(standard.Dialog):
         self.setLayout(self.mainlayt)
 
         # Signal/slot connections
-        # pylint: disable=no-member
         self.revision.textChanged.connect(self.update_title)
         self.revision.enter.connect(self.merge_revision)
         self.revisions.itemSelectionChanged.connect(self.revision_selected)
@@ -159,9 +156,10 @@ class Merge(standard.Dialog):
         branch = self.model.currentbranch
         revision = self.revision.text()
         if revision:
-            txt = N_('Merge "%(revision)s" into "%(branch)s"') % dict(
-                revision=revision, branch=branch
-            )
+            txt = N_('Merge "%(revision)s" into "%(branch)s"') % {
+                'revision': revision,
+                'branch': branch,
+            }
         else:
             txt = N_('Merge into "%s"') % branch
         self.button_merge.setEnabled(bool(revision))
@@ -202,9 +200,9 @@ class Merge(standard.Dialog):
         """Retrieve candidate items to merge"""
         if get(self.radio_local):
             return self.model.local_branches
-        elif get(self.radio_remote):
+        if get(self.radio_remote):
             return self.model.remote_branches
-        elif get(self.radio_tag):
+        if get(self.radio_tag):
             return self.model.tags
         return []
 
@@ -237,7 +235,7 @@ class Merge(standard.Dialog):
 
     def export_state(self):
         """Export persistent settings"""
-        state = super(Merge, self).export_state()
+        state = super().export_state()
         state['no-ff'] = get(self.checkbox_noff)
         state['sign'] = get(self.checkbox_sign)
         state['commit'] = get(self.checkbox_commit)
@@ -245,7 +243,7 @@ class Merge(standard.Dialog):
 
     def apply_state(self, state):
         """Apply persistent settings"""
-        result = super(Merge, self).apply_state(state)
+        result = super().apply_state(state)
         self.checkbox_noff.setChecked(state.get('no-ff', False))
         self.checkbox_sign.setChecked(state.get('sign', False))
         self.checkbox_commit.setChecked(state.get('commit', True))

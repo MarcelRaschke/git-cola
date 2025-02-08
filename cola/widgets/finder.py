@@ -1,5 +1,4 @@
 """File finder widgets"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 from functools import partial
 
@@ -42,7 +41,7 @@ def new_finder(context, paths=None, parent=None):
 
 
 def add_wildcards(arg):
-    """Add "*" around user input to generate ls-files pathspecs matches
+    """Add "*" around user input to generate ls-files pathspec matches
 
     >>> '*x*' == \
         add_wildcards('x') == \
@@ -147,10 +146,10 @@ class Finder(standard.Dialog):
         self.bottom_layout = qtutils.hbox(
             defs.no_margin,
             defs.button_spacing,
-            self.close_button,
-            qtutils.STRETCH,
             self.help_button,
             self.refresh_button,
+            qtutils.STRETCH,
+            self.close_button,
             self.open_default_button,
             self.edit_button,
         )
@@ -168,7 +167,6 @@ class Finder(standard.Dialog):
         thread = self.worker_thread = FindFilesThread(context, self)
         thread.result.connect(self.process_result, type=Qt.QueuedConnection)
 
-        # pylint: disable=no-member
         self.input_txt.textChanged.connect(lambda s: self.search())
         self.input_txt.activated.connect(self.focus_tree)
         self.input_txt.down.connect(self.focus_tree)
@@ -190,7 +188,7 @@ class Finder(standard.Dialog):
         qtutils.connect_button(self.edit_button, self.edit)
         qtutils.connect_button(self.open_default_button, self.open_default)
         qtutils.connect_button(self.refresh_button, self.search)
-        qtutils.connect_button(self.help_button, show_help)
+        qtutils.connect_button(self.help_button, partial(show_help, context))
         qtutils.connect_button(self.close_button, self.close)
         qtutils.add_close_action(self)
 

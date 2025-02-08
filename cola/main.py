@@ -1,5 +1,4 @@
 """Launcher and command line interface to git-cola"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 import argparse
 import sys
 
@@ -7,13 +6,14 @@ from . import app
 from . import cmds
 from . import compat
 from . import core
+from . import version
 
 
 def main(argv=None):
     app.initialize()
     if argv is None:
         argv = sys.argv[1:]
-    # we're using argparse with subparser, but argparse
+    # we're using argparse with subparsers, but argparse
     # does not allow us to assign a default subparser
     # when none has been specified.  We fake it by injecting
     # 'cola' into the command-line so that parse_args()
@@ -26,10 +26,6 @@ def main(argv=None):
         argv.append('--help')
     args = parse_args(argv)
     return args.func(args)
-
-
-def winmain():
-    return app.winmain(main)
 
 
 def parse_args(argv):
@@ -74,11 +70,12 @@ def add_help_options(parser):
         '--help-commands',
         default=False,
         action='store_true',
-        help='show available sub-commands',
+        help='show available commands',
     )
 
 
 def add_command(parent, name, description, func):
+    """Add a "git cola" command with common arguments"""
     parser = parent.add_parser(str(name), help=description)
     parser.set_defaults(func=func)
     app.add_common_arguments(parser)
@@ -86,7 +83,8 @@ def add_command(parent, name, description, func):
 
 
 def add_cola_command(subparser):
-    parser = add_command(subparser, 'cola', 'start git-cola', cmd_cola)
+    """Add the main "git cola" command. "git cola cola" is valid"""
+    parser = add_command(subparser, 'cola', 'launch git-cola', cmd_cola)
     parser.add_argument(
         '--amend', default=False, action='store_true', help='start in amend mode'
     )
@@ -97,10 +95,12 @@ def add_cola_command(subparser):
 
 
 def add_about_command(parent):
+    """Add the "git cola about" documentation command"""
     add_command(parent, 'about', 'about git-cola', cmd_about)
 
 
 def add_am_command(parent):
+    """Add the "git cola am" command for applying patches"""
     parser = add_command(parent, 'am', 'apply patches using "git am"', cmd_am)
     parser.add_argument(
         'patches', metavar='<patches>', nargs='*', help='patches to apply'
@@ -108,6 +108,7 @@ def add_am_command(parent):
 
 
 def add_archive_command(parent):
+    """Add the "git cola archive" tarball export command"""
     parser = add_command(parent, 'archive', 'save an archive', cmd_archive)
     parser.add_argument(
         'ref', metavar='<ref>', nargs='?', default=None, help='commit to archive'
@@ -115,22 +116,27 @@ def add_archive_command(parent):
 
 
 def add_branch_command(subparser):
+    """Add the "git cola branch" branch creation command"""
     add_command(subparser, 'branch', 'create a branch', cmd_branch)
 
 
 def add_browse_command(subparser):
+    """Add the "git cola browse" repository browser command"""
     add_command(subparser, 'browse', 'browse repository', cmd_browse)
 
 
 def add_clone_command(subparser):
+    """Add the "git cola clone" command for cloning repositories"""
     add_command(subparser, 'clone', 'clone repository', cmd_clone)
 
 
 def add_config_command(subparser):
+    """Add the "git cola config" command for editing preferences"""
     add_command(subparser, 'config', 'edit configuration', cmd_config)
 
 
 def add_dag_command(subparser):
+    """Add the "git cola dag" command for visualizing history"""
     parser = add_command(subparser, 'dag', 'start git-dag', cmd_dag)
     parser.add_argument(
         '-c',
@@ -147,29 +153,38 @@ def add_dag_command(subparser):
         help='visualize all branches',
         default=False,
     )
-    parser.add_argument('args', nargs='*', metavar='<args>', help='git log arguments')
+    parser.add_argument(
+        'args', nargs=argparse.REMAINDER, metavar='<args>', help='git log arguments'
+    )
 
 
 def add_diff_command(subparser):
+    """Add the "git cola diff" command for diffing changes"""
     parser = add_command(subparser, 'diff', 'view diffs', cmd_diff)
-    parser.add_argument('args', nargs='*', metavar='<args>', help='git diff arguments')
+    parser.add_argument(
+        'args', nargs=argparse.REMAINDER, metavar='<args>', help='git diff arguments'
+    )
 
 
 def add_fetch_command(subparser):
+    """Add the "git cola fetch" command for fetching repositories"""
     add_command(subparser, 'fetch', 'fetch remotes', cmd_fetch)
 
 
 def add_find_command(subparser):
+    """Add the "git cola find" command for finding files"""
     parser = add_command(subparser, 'find', 'find files', cmd_find)
     parser.add_argument('paths', nargs='*', metavar='<path>', help='filter by path')
 
 
 def add_grep_command(subparser):
+    """Add the "git cola grep" command for searching files"""
     parser = add_command(subparser, 'grep', 'grep source', cmd_grep)
     parser.add_argument('args', nargs='*', metavar='<args>', help='git grep arguments')
 
 
 def add_merge_command(subparser):
+    """Add the "git cola merge" command for merging branches"""
     parser = add_command(subparser, 'merge', 'merge branches', cmd_merge)
     parser.add_argument(
         'ref', nargs='?', metavar='<ref>', help='branch, tag, or commit to merge'
@@ -177,6 +192,7 @@ def add_merge_command(subparser):
 
 
 def add_pull_command(subparser):
+    """Add the "git cola pull" command for pulling changes from remotes"""
     parser = add_command(subparser, 'pull', 'pull remote branches', cmd_pull)
     parser.add_argument(
         '--rebase',
@@ -187,10 +203,12 @@ def add_pull_command(subparser):
 
 
 def add_push_command(subparser):
+    """Add the "git cola push" command for pushing branches to remotes"""
     add_command(subparser, 'push', 'push remote branches', cmd_push)
 
 
 def add_rebase_command(subparser):
+    """Add the "git cola rebase" command for rebasing the current branch"""
     parser = add_command(subparser, 'rebase', 'interactive rebase', cmd_rebase)
     parser.add_argument(
         '-v',
@@ -232,7 +250,13 @@ def add_rebase_command(subparser):
         '--preserve-merges',
         default=False,
         action='store_true',
-        help='try to recreate merges instead of ignoring them',
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        '--rebase-merges',
+        default=False,
+        action='store_true',
+        help='preserve branching structure when rebasing',
     )
     parser.add_argument(
         '-s',
@@ -350,6 +374,12 @@ def add_rebase_command(subparser):
         help="passed to 'git apply' by 'git rebase'",
     )
     parser.add_argument(
+        '--update-refs',
+        default=False,
+        action='store_true',
+        help='update branches that point to commits that are being rebased',
+    )
+    parser.add_argument(
         '-C',
         dest='context_lines',
         default=None,
@@ -404,22 +434,27 @@ def add_rebase_command(subparser):
 
 
 def add_recent_command(subparser):
+    """Add the "git cola recent" command for opening recently edited files"""
     add_command(subparser, 'recent', 'edit recent files', cmd_recent)
 
 
 def add_remote_command(subparser):
+    """Add the "git cola remote" command for editing remotes"""
     add_command(subparser, 'remote', 'edit remotes', cmd_remote)
 
 
 def add_search_command(subparser):
+    """Add the "git cola search" command for searching over commits"""
     add_command(subparser, 'search', 'search commits', cmd_search)
 
 
 def add_stash_command(subparser):
+    """Add the "git cola stash" command for creating and applying stashes"""
     add_command(subparser, 'stash', 'stash and unstash changes', cmd_stash)
 
 
 def add_tag_command(subparser):
+    """Add the "git cola tag" command for creating tags"""
     parser = add_command(subparser, 'tag', 'create tags', cmd_tag)
     parser.add_argument(
         'name', metavar='<name>', nargs='?', default=None, help='tag name'
@@ -437,7 +472,14 @@ def add_tag_command(subparser):
 
 
 def add_version_command(subparser):
+    """Add the "git cola version" command for displaying Git Cola's version"""
     parser = add_command(subparser, 'version', 'print the version', cmd_version)
+    parser.add_argument(
+        '--builtin',
+        action='store_true',
+        default=False,
+        help='print the builtin fallback version',
+    )
     parser.add_argument(
         '--brief',
         action='store_true',
@@ -448,7 +490,8 @@ def add_version_command(subparser):
 
 # entry points
 def cmd_cola(args):
-    from .widgets.main import MainView  # pylint: disable=all
+    """The "git cola" entry point"""
+    from .widgets.main import MainView
 
     status_filter = args.status_filter
     if status_filter:
@@ -477,7 +520,7 @@ def start_cola(context, view):
 
 
 def cmd_about(args):
-    from .widgets import about  # pylint: disable=all
+    from .widgets import about
 
     context = app.application_init(args)
     view = about.about_dialog(context)
@@ -485,7 +528,7 @@ def cmd_about(args):
 
 
 def cmd_am(args):
-    from .widgets.patch import new_apply_patches  # pylint: disable=all
+    from .widgets.patch import new_apply_patches
 
     context = app.application_init(args)
     view = new_apply_patches(context, patches=args.patches)
@@ -493,7 +536,7 @@ def cmd_am(args):
 
 
 def cmd_archive(args):
-    from .widgets import archive  # pylint: disable=all
+    from .widgets import archive
 
     context = app.application_init(args, update=True)
     if args.ref is None:
@@ -503,7 +546,7 @@ def cmd_archive(args):
 
 
 def cmd_branch(args):
-    from .widgets.createbranch import create_new_branch  # pylint: disable=all
+    from .widgets.createbranch import create_new_branch
 
     context = app.application_init(args, update=True)
     view = create_new_branch(context)
@@ -511,7 +554,7 @@ def cmd_branch(args):
 
 
 def cmd_browse(args):
-    from .widgets.browse import worktree_browser  # pylint: disable=all
+    from .widgets.browse import worktree_browser
 
     context = app.application_init(args)
     view = worktree_browser(context, show=False, update=False)
@@ -519,7 +562,7 @@ def cmd_browse(args):
 
 
 def cmd_clone(args):
-    from .widgets import clone  # pylint: disable=all
+    from .widgets import clone
 
     context = app.application_init(args)
     view = clone.clone(context)
@@ -530,7 +573,7 @@ def cmd_clone(args):
 
 
 def cmd_config(args):
-    from .widgets.prefs import preferences  # pylint: disable=all
+    from .widgets.prefs import preferences
 
     context = app.application_init(args)
     view = preferences(context)
@@ -538,9 +581,9 @@ def cmd_config(args):
 
 
 def cmd_dag(args):
-    from .widgets import dag  # pylint: disable=all
+    from .widgets import dag
 
-    context = app.application_init(args)
+    context = app.application_init(args, app_name='Git DAG')
     # cola.main() uses parse_args(), unlike dag.main() which uses
     # parse_known_args(), thus we aren't able to automatically forward
     # all unknown arguments.  Special-case support for "--all" since it's
@@ -552,7 +595,7 @@ def cmd_dag(args):
 
 
 def cmd_diff(args):
-    from .difftool import diff_expression  # pylint: disable=all
+    from .difftool import diff_expression
 
     context = app.application_init(args)
     expr = core.list2cmdline(args.args)
@@ -563,7 +606,7 @@ def cmd_diff(args):
 def cmd_fetch(args):
     # TODO: the calls to update_status() can be done asynchronously
     # by hooking into the message_updated notification.
-    from .widgets import remote  # pylint: disable=all
+    from .widgets import remote
 
     context = app.application_init(args)
     context.model.update_status()
@@ -572,7 +615,7 @@ def cmd_fetch(args):
 
 
 def cmd_find(args):
-    from .widgets import finder  # pylint: disable=all
+    from .widgets import finder
 
     context = app.application_init(args)
     paths = core.list2cmdline(args.paths)
@@ -581,7 +624,7 @@ def cmd_find(args):
 
 
 def cmd_grep(args):
-    from .widgets import grep  # pylint: disable=all
+    from .widgets import grep
 
     context = app.application_init(args)
     text = core.list2cmdline(args.args)
@@ -590,7 +633,7 @@ def cmd_grep(args):
 
 
 def cmd_merge(args):
-    from .widgets.merge import Merge  # pylint: disable=all
+    from .widgets.merge import Merge
 
     context = app.application_init(args, update=True)
     view = Merge(context, parent=None, ref=args.ref)
@@ -598,14 +641,14 @@ def cmd_merge(args):
 
 
 def cmd_version(args):
-    from . import version  # pylint: disable=all
+    from . import version
 
-    version.print_version(brief=args.brief)
+    version.print_version(builtin=args.builtin, brief=args.brief)
     return 0
 
 
 def cmd_pull(args):
-    from .widgets import remote  # pylint: disable=all
+    from .widgets import remote
 
     context = app.application_init(args, update=True)
     view = remote.pull(context)
@@ -615,7 +658,7 @@ def cmd_pull(args):
 
 
 def cmd_push(args):
-    from .widgets import remote  # pylint: disable=all
+    from .widgets import remote
 
     context = app.application_init(args, update=True)
     view = remote.push(context)
@@ -623,13 +666,14 @@ def cmd_push(args):
 
 
 def cmd_rebase(args):
+    context = app.application_init(args)
+    context.model.update_refs()
     kwargs = {
         'verbose': args.verbose,
         'quiet': args.quiet,
         'autostash': args.autostash,
         'fork_point': args.fork_point,
         'onto': args.onto,
-        'preserve_merges': args.preserve_merges,
         'strategy': args.strategy,
         'no_ff': args.no_ff,
         'merge': args.merge,
@@ -652,16 +696,22 @@ def cmd_rebase(args):
         'abort': args.abort,
         'skip': args.skip,
         'edit_todo': args.edit_todo,
+        'update_refs': args.update_refs,
         'upstream': args.upstream,
         'branch': args.branch,
     }
-    context = app.application_init(args)
+    # Backwards compatibility: --preserve-merges was replaced by --rebase-merges.
+    rebase_merges = args.rebase_merges or args.preserve_merges
+    if version.check_git(context, 'rebase-merges'):
+        kwargs['rebase_merges'] = rebase_merges
+    else:
+        kwargs['preserve_merges'] = rebase_merges
     status, _, _ = cmds.do(cmds.Rebase, context, **kwargs)
     return status
 
 
 def cmd_recent(args):
-    from .widgets import recent  # pylint: disable=all
+    from .widgets import recent
 
     context = app.application_init(args)
     view = recent.browse_recent_files(context)
@@ -669,7 +719,7 @@ def cmd_recent(args):
 
 
 def cmd_remote(args):
-    from .widgets import editremotes  # pylint: disable=all
+    from .widgets import editremotes
 
     context = app.application_init(args)
     view = editremotes.editor(context, run=False)
@@ -677,7 +727,7 @@ def cmd_remote(args):
 
 
 def cmd_search(args):
-    from .widgets.search import search  # pylint: disable=all
+    from .widgets.search import search
 
     context = app.application_init(args)
     view = search(context)
@@ -685,7 +735,7 @@ def cmd_search(args):
 
 
 def cmd_stash(args):
-    from .widgets import stash  # pylint: disable=all
+    from .widgets import stash
 
     context = app.application_init(args)
     view = stash.view(context, show=False)
@@ -693,9 +743,10 @@ def cmd_stash(args):
 
 
 def cmd_tag(args):
-    from .widgets.createtag import new_create_tag  # pylint: disable=all
+    from .widgets.createtag import new_create_tag
 
     context = app.application_init(args)
+    context.model.update_status()
     view = new_create_tag(context, name=args.name, ref=args.ref, sign=args.sign)
     return app.application_start(context, view)
 
@@ -710,4 +761,4 @@ def shortcut_launch():
     argv = sys.argv[1:]
     if not argv:
         argv = ['cola', '--prompt']
-    return app.winmain(main, argv)
+    return main(argv=argv)

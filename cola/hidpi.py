@@ -1,5 +1,4 @@
 """Provides High DPI support by wrapping Qt options"""
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 from qtpy import QtCore
 
@@ -9,10 +8,11 @@ from . import compat
 from . import version
 
 
-class Option(object):
+class Option:
     AUTO = '0'
     DISABLE = 'disable'
     TIMES_1 = '1'
+    TIMES_1_25 = '1.25'
     TIMES_1_5 = '1.5'
     TIMES_2 = '2'
 
@@ -31,7 +31,7 @@ def apply_choice(value):
         ):
             compat.setenv('QT_AUTO_SCREEN_SCALE_FACTOR', '1')
             compat.unsetenv('QT_SCALE_FACTOR')
-    elif value in (Option.TIMES_1, Option.TIMES_1_5, Option.TIMES_2):
+    elif value and value != Option.DISABLE:
         compat.unsetenv('QT_AUTO_SCREEN_SCALE_FACTOR')
         compat.setenv('QT_SCALE_FACTOR', value)
 
@@ -41,6 +41,7 @@ def options():
         (N_('Auto'), Option.AUTO),
         (N_('Disable'), Option.DISABLE),
         (N_('x 1'), Option.TIMES_1),
+        (N_('x 1.25'), Option.TIMES_1_25),
         (N_('x 1.5'), Option.TIMES_1_5),
         (N_('x 2'), Option.TIMES_2),
     )

@@ -1,5 +1,4 @@
 """Provides the StashView dialog."""
-from __future__ import absolute_import, division, print_function, unicode_literals
 
 from qtpy import QtCore
 from qtpy import QtWidgets
@@ -52,7 +51,7 @@ class AddToGitIgnore(Dialog):
         )
 
         self.radio_in_repo = qtutils.radio(text=N_('Add to .gitignore'), checked=True)
-        self.radio_local = qtutils.radio(text=N_('Add to local ' '.git/info/exclude'))
+        self.radio_local = qtutils.radio(text=N_('Add to local .git/info/exclude'))
         self.location_radio_group = qtutils.buttongroup(
             self.radio_in_repo, self.radio_local
         )

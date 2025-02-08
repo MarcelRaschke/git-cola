@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from cola import compat
 from cola import spellcheck
 
@@ -13,7 +11,7 @@ def test_spellcheck_generator():
 
 def test_spellcheck_unicode():
     path = helper.fixture('unicode.txt')
-    check = spellcheck.NorvigSpellCheck(cracklib=path)
+    check = spellcheck.NorvigSpellCheck(words=path)
     assert_spellcheck(check)
 
 

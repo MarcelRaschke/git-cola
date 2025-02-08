@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from qtpy import QtCore
 from qtpy import QtGui
 from qtpy import QtWidgets
@@ -86,7 +84,7 @@ def highlight_document(edit, filename):
             if block_len == 0:
                 block.layout().setAdditionalFormats(block_formats)
                 doc.markContentsDirty(block.position(), block.length())
-                block = block.next()  # pylint: disable=next-method-called
+                block = block.next()
                 block_pos = 0
                 block_len = block.length()
                 block_formats = []
@@ -100,9 +98,8 @@ if __name__ == '__main__':
     app = QtWidgets.QApplication([])
 
     python = QtWidgets.QPlainTextEdit()
-    f = open(__file__, 'r')
-    python.setPlainText(f.read())
-    f.close()
+    with open(__file__, encoding='utf-8') as f:
+        python.setPlainText(f.read())
 
     python.setWindowTitle('python')
     python.show()

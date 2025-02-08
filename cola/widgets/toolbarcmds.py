@@ -1,6 +1,5 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from .. import cmds
+from .. import difftool
 from .. import guicmds
 from ..widgets import archive
 from ..widgets import browse
@@ -8,11 +7,11 @@ from ..widgets import compare
 from ..widgets import createbranch
 from ..widgets import createtag
 from ..widgets import dag
+from ..widgets import diff
 from ..widgets import editremotes
 from ..widgets import finder
 from ..widgets import grep
 from ..widgets import merge
-from ..widgets import patch
 from ..widgets import recent
 from ..widgets import remote
 from ..widgets import search
@@ -28,6 +27,11 @@ COMMANDS = {
         'title': 'Revert Unstaged Edits...',
         'action': cmds.run(cmds.RevertUnstagedEdits),
         'icon': 'undo',
+    },
+    'File::QuickOpen': {
+        'title': 'Quick Open...',
+        'action': guicmds.open_quick_repo_search,
+        'icon': 'search',
     },
     'File::NewRepo': {
         'title': 'New Repository...',
@@ -71,7 +75,7 @@ COMMANDS = {
     },
     'File::ApplyPatches': {
         'title': 'Apply Patches...',
-        'action': patch.apply_patches,
+        'action': diff.apply_patches,
         'icon': 'diff',
     },
     'File::ExportPatches': {
@@ -173,8 +177,13 @@ COMMANDS = {
         'action': cmds.run(cmds.UndoLastCommit),
         'icon': 'style_dialog_discard',
     },
-    'Commit::StageAll': {
-        'title': 'Stage All Untracked',
+    'Commit::StageModified': {
+        'title': 'Stage Modified',
+        'action': cmds.run(cmds.StageModified),
+        'icon': 'add',
+    },
+    'Commit::StageUntracked': {
+        'title': 'Stage Untracked',
         'action': cmds.run(cmds.StageUntracked),
         'icon': 'add',
     },
@@ -200,7 +209,7 @@ COMMANDS = {
     },
     'Diff::Difftool': {
         'title': 'Launch Diff tool',
-        'action': cmds.run(cmds.LaunchDifftool),
+        'action': cmds.run(difftool.LaunchDifftool),
         'icon': 'diff',
     },
     'Diff::Expression': {

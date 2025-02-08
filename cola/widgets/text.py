@@ -1,6 +1,5 @@
 """Text widgets"""
-# pylint: disable=unexpected-keyword-arg
-from __future__ import absolute_import, division, print_function, unicode_literals
+from functools import partial
 import math
 
 from qtpy import QtCore
@@ -12,37 +11,37 @@ from qtpy.QtCore import Signal
 from ..models import prefs
 from ..qtutils import get
 from .. import hotkeys
+from .. import icons
 from .. import qtutils
+from .. import utils
 from ..i18n import N_
 from . import defs
 
 
 def get_stripped(widget):
+    """Return a text value without any leading or trailing whitespace"""
     return widget.get().strip()
 
 
 class LineEdit(QtWidgets.QLineEdit):
-
     cursor_changed = Signal(int, int)
+    esc_pressed = Signal()
 
-    def __init__(self, parent=None, row=1, get_value=None, clear_button=False):
+    def __init__(self, parent=None, row=1, clear_button=False):
         QtWidgets.QLineEdit.__init__(self, parent)
         self._row = row
-        if get_value is None:
-            get_value = get_stripped
-        self._get_value = get_value
         self.cursor_position = LineEditCursorPosition(self, row)
-
+        self.menu_actions = []
         if clear_button and hasattr(self, 'setClearButtonEnabled'):
             self.setClearButtonEnabled(True)
 
     def get(self):
-        """Return the raw unicode value from Qt"""
+        """Return the raw Unicode value from Qt"""
         return self.text()
 
     def value(self):
         """Return the processed value, e.g. stripped"""
-        return self._get_value(self)
+        return get_stripped(self)
 
     def set_value(self, value, block=False):
         """Update the widget to the specified value"""
@@ -58,8 +57,14 @@ class LineEdit(QtWidgets.QLineEdit):
         self.setText(value)
         self.setCursorPosition(pos)
 
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key_Escape:
+            self.esc_pressed.emit()
+        super().keyPressEvent(event)
 
-class LineEditCursorPosition(object):
+
+class LineEditCursorPosition:
     """Translate cursorPositionChanged(int,int) into cursorPosition(int,int)"""
 
     def __init__(self, widget, row):
@@ -79,13 +84,10 @@ class LineEditCursorPosition(object):
 
 
 class BaseTextEditExtension(QtCore.QObject):
-    def __init__(self, widget, get_value, readonly):
+    def __init__(self, widget, readonly):
         QtCore.QObject.__init__(self, widget)
         self.widget = widget
         self.cursor_position = TextEditCursorPosition(widget, self)
-        if get_value is None:
-            get_value = get_stripped
-        self._get_value = get_value
         self._tabwidth = 8
         self._readonly = readonly
         self._init_flags()
@@ -95,7 +97,7 @@ class BaseTextEditExtension(QtCore.QObject):
         widget = self.widget
         widget.setMinimumSize(QtCore.QSize(10, 10))
         widget.setWordWrapMode(QtGui.QTextOption.WordWrap)
-        widget.setLineWrapMode(widget.NoWrap)
+        widget.setLineWrapMode(widget.__class__.NoWrap)
         if self._readonly:
             widget.setReadOnly(True)
             widget.setAcceptDrops(False)
@@ -106,12 +108,12 @@ class BaseTextEditExtension(QtCore.QObject):
             )
 
     def get(self):
-        """Return the raw unicode value from Qt"""
+        """Return the raw Unicode value from Qt"""
         return self.widget.toPlainText()
 
     def value(self):
         """Return a safe value, e.g. a stripped value"""
-        return self._get_value(self.widget)
+        return get_stripped(self.widget)
 
     def set_value(self, value, block=False):
         """Update the widget to the specified value"""
@@ -165,9 +167,7 @@ class BaseTextEditExtension(QtCore.QObject):
 
     def set_tabwidth(self, width):
         self._tabwidth = width
-        font = self.widget.font()
-        fm = QtGui.QFontMetrics(font)
-        pixels = fm.width('M' * width)
+        pixels = qtutils.text_width(self.widget.font(), 'M') * width
         self.widget.setTabStopWidth(pixels)
 
     def selected_line(self):
@@ -189,7 +189,13 @@ class BaseTextEditExtension(QtCore.QObject):
     def has_selection(self):
         return self.cursor().hasSelection()
 
+    def selected_text(self):
+        """Return the selected text"""
+        _, selection = self.offset_and_selection()
+        return selection
+
     def offset_and_selection(self):
+        """Return the cursor offset and selected text"""
         cursor = self.cursor()
         offset = cursor.selectionStart()
         selection_text = cursor.selection().toPlainText()
@@ -204,19 +210,54 @@ class BaseTextEditExtension(QtCore.QObject):
                 cursor = widget.cursorForPosition(event.pos())
                 widget.setTextCursor(cursor)
 
+    def add_links_to_menu(self, menu):
+        """Add actions for opening URLs to a custom menu"""
+        links = self._get_links()
+        if links:
+            menu.addSeparator()
+        for url in links:
+            action = menu.addAction(N_('Open "%s"') % url)
+            action.setIcon(icons.external())
+            qtutils.connect_action(
+                action, partial(QtGui.QDesktopServices.openUrl, QtCore.QUrl(url))
+            )
+
+    def _get_links(self):
+        """Return http links on the current line"""
+        _, selection = self.offset_and_selection()
+        if selection:
+            line = selection
+        else:
+            line = self.selected_line()
+        if not line:
+            return []
+        return [
+            word for word in line.split() if word.startswith(('http://', 'https://'))
+        ]
+
+    def create_context_menu(self, event_pos):
+        """Create a context menu for a widget"""
+        menu = self.widget.createStandardContextMenu(event_pos)
+        qtutils.add_menu_actions(menu, self.widget.menu_actions)
+        self.add_links_to_menu(menu)
+        return menu
+
+    def context_menu_event(self, event):
+        """Default context menu event"""
+        event_pos = event.pos()
+        menu = self.widget.create_context_menu(event_pos)
+        menu.exec_(self.widget.mapToGlobal(event_pos))
+
     # For extension by sub-classes
 
-    # pylint: disable=no-self-use
     def init(self):
         """Called during init for class-specific settings"""
         return
 
-    # pylint: disable=no-self-use,unused-argument
     def set_textwidth(self, width):
         """Set the text width"""
         return
 
-    # pylint: disable=no-self-use,unused-argument
     def set_linebreak(self, brk):
         """Enable word wrapping"""
         return
@@ -232,17 +273,19 @@ class PlainTextEditExtension(BaseTextEditExtension):
 
 
 class PlainTextEdit(QtWidgets.QPlainTextEdit):
-
     cursor_changed = Signal(int, int)
     leave = Signal()
 
-    def __init__(self, parent=None, get_value=None, readonly=False):
+    def __init__(self, parent=None, readonly=False, options=None):
         QtWidgets.QPlainTextEdit.__init__(self, parent)
-        self.ext = PlainTextEditExtension(self, get_value, readonly)
+        self.ext = PlainTextEditExtension(self, readonly)
         self.cursor_position = self.ext.cursor_position
+        self.mouse_zoom = True
+        self.options = options
+        self.menu_actions = []
 
     def get(self):
-        """Return the raw unicode value from Qt"""
+        """Return the raw Unicode value from Qt"""
         return self.ext.get()
 
     # For compatibility with QTextEdit
@@ -253,14 +296,42 @@ class PlainTextEdit(QtWidgets.QPlainTextEdit):
         """Return a safe value, e.g. a stripped value"""
         return self.ext.value()
 
+    def offset_and_selection(self):
+        """Return the cursor offset and selected text"""
+        return self.ext.offset_and_selection()
+
     def set_value(self, value, block=False):
         self.ext.set_value(value, block=block)
+
+    def set_mouse_zoom(self, value):
+        """Enable/disable text zooming in response to ctrl + mousewheel scroll events"""
+        self.mouse_zoom = value
+
+    def set_options(self, options):
+        """Register an Options widget"""
+        self.options = options
+
+    def set_word_wrapping(self, enabled, update=False):
+        """Enable/disable word wrapping"""
+        if update and self.options is not None:
+            with qtutils.BlockSignals(self.options.enable_word_wrapping):
+                self.options.enable_word_wrapping.setChecked(enabled)
+        if enabled:
+            self.setWordWrapMode(QtGui.QTextOption.WordWrap)
+            self.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        else:
+            self.setWordWrapMode(QtGui.QTextOption.NoWrap)
+            self.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
 
     def has_selection(self):
         return self.ext.has_selection()
 
     def selected_line(self):
         return self.ext.selected_line()
+
+    def selected_text(self):
+        """Return the selected text"""
+        return self.ext.selected_text()
 
     def set_tabwidth(self, width):
         self.ext.set_tabwidth(width)
@@ -273,20 +344,156 @@ class PlainTextEdit(QtWidgets.QPlainTextEdit):
 
     def mousePressEvent(self, event):
         self.ext.mouse_press_event(event)
-        super(PlainTextEdit, self).mousePressEvent(event)
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event):
         """Disable control+wheelscroll text resizing"""
-        if event.modifiers() & Qt.ControlModifier:
+        if not self.mouse_zoom and (event.modifiers() & Qt.ControlModifier):
             event.ignore()
             return
-        super(PlainTextEdit, self).wheelEvent(event)
+        super().wheelEvent(event)
+
+    def create_context_menu(self, event_pos):
+        """Create a custom context menu"""
+        return self.ext.create_context_menu(event_pos)
+
+    def contextMenuEvent(self, event):
+        """Custom contextMenuEvent() for building our custom context menus"""
+        self.ext.context_menu_event(event)
+
+
+class TextSearchWidget(QtWidgets.QWidget):
+    """The search dialog that displays over a text edit field"""
+
+    def __init__(self, widget, parent):
+        super().__init__(parent)
+        self.setAutoFillBackground(True)
+        self._widget = widget
+        self._parent = parent
+
+        self.text = HintedDefaultLineEdit(N_('Find in diff'), parent=self)
+
+        self.prev_button = qtutils.create_action_button(
+            tooltip=N_('Find the previous occurrence of the phrase'), icon=icons.up()
+        )
+
+        self.next_button = qtutils.create_action_button(
+            tooltip=N_('Find the next occurrence of the phrase'), icon=icons.down()
+        )
+
+        self.match_case_checkbox = qtutils.checkbox(N_('Match Case'))
+        self.whole_words_checkbox = qtutils.checkbox(N_('Whole Words'))
+
+        self.close_button = qtutils.create_action_button(
+            tooltip=N_('Close the find bar'), icon=icons.close()
+        )
+
+        layout = qtutils.hbox(
+            defs.margin,
+            defs.button_spacing,
+            self.text,
+            self.prev_button,
+            self.next_button,
+            self.match_case_checkbox,
+            self.whole_words_checkbox,
+            qtutils.STRETCH,
+            self.close_button,
+        )
+        self.setLayout(layout)
+        self.setFocusProxy(self.text)
+
+        self.text.esc_pressed.connect(self.hide_search)
+        self.text.returnPressed.connect(self.search)
+        self.text.textChanged.connect(self.search)
+
+        self.search_next_action = qtutils.add_action(
+            parent,
+            N_('Find next item'),
+            self.search,
+            hotkeys.SEARCH_NEXT,
+        )
+        self.search_prev_action = qtutils.add_action(
+            parent,
+            N_('Find previous item'),
+            self.search_backwards,
+            hotkeys.SEARCH_PREV,
+        )
+
+        qtutils.connect_button(self.next_button, self.search)
+        qtutils.connect_button(self.prev_button, self.search_backwards)
+        qtutils.connect_button(self.close_button, self.hide_search)
+        qtutils.connect_checkbox(self.match_case_checkbox, lambda _: self.search())
+        qtutils.connect_checkbox(self.whole_words_checkbox, lambda _: self.search())
+
+    def search(self):
+        """Emit a signal with the current search text"""
+        self.search_text(backwards=False)
+
+    def search_backwards(self):
+        """Emit a signal with the current search text for a backwards search"""
+        self.search_text(backwards=True)
+
+    def hide_search(self):
+        """Hide the search window"""
+        self.hide()
+        self._parent.setFocus()
+
+    def find_flags(self, backwards):
+        """Return QTextDocument.FindFlags for the current search options"""
+        flags = QtGui.QTextDocument.FindFlag(0)
+        if backwards:
+            flags = flags | QtGui.QTextDocument.FindBackward
+        if self.match_case_checkbox.isChecked():
+            flags = flags | QtGui.QTextDocument.FindCaseSensitively
+        if self.whole_words_checkbox.isChecked():
+            flags = flags | QtGui.QTextDocument.FindWholeWords
+        return flags
+
+    def is_case_sensitive(self):
+        """Are we searching using a case-insensitive search?"""
+        return self.match_case_checkbox.isChecked()
+
+    def search_text(self, backwards=False):
+        """Search the diff text for the given text"""
+        text = self.text.get()
+        cursor = self._widget.textCursor()
+        if cursor.hasSelection():
+            selected_text = cursor.selectedText()
+            case_sensitive = self.is_case_sensitive()
+            if text_matches(case_sensitive, selected_text, text):
+                if backwards:
+                    position = cursor.selectionStart()
+                else:
+                    position = cursor.selectionEnd()
+            else:
+                if backwards:
+                    position = cursor.selectionEnd()
+                else:
+                    position = cursor.selectionStart()
+            cursor.setPosition(position)
+            self._widget.setTextCursor(cursor)
+
+        flags = self.find_flags(backwards)
+        if not self._widget.find(text, flags):
+            if backwards:
+                location = QtGui.QTextCursor.End
+            else:
+                location = QtGui.QTextCursor.Start
+            cursor.movePosition(location, QtGui.QTextCursor.MoveAnchor)
+            self._widget.setTextCursor(cursor)
+            self._widget.find(text, flags)
+
+
+def text_matches(case_sensitive, a, b):
+    """Compare text with case sensitivity taken into account"""
+    if case_sensitive:
+        return a == b
+    return a.lower() == b.lower()
 
 
 class TextEditExtension(BaseTextEditExtension):
     def init(self):
-        widget = self.widget
-        widget.setAcceptRichText(False)
+        self.widget.setAcceptRichText(False)
 
     def set_linebreak(self, brk):
         if brk:
@@ -300,29 +507,39 @@ class TextEditExtension(BaseTextEditExtension):
 
 
 class TextEdit(QtWidgets.QTextEdit):
-
     cursor_changed = Signal(int, int)
     leave = Signal()
 
-    def __init__(self, parent=None, get_value=None, readonly=False):
+    def __init__(self, parent=None, readonly=False):
         QtWidgets.QTextEdit.__init__(self, parent)
-        self.ext = TextEditExtension(self, get_value, readonly)
+        self.ext = TextEditExtension(self, readonly)
         self.cursor_position = self.ext.cursor_position
         self.expandtab_enabled = False
+        self.menu_actions = []
 
     def get(self):
-        """Return the raw unicode value from Qt"""
+        """Return the raw Unicode value from Qt"""
         return self.ext.get()
 
     def value(self):
         """Return a safe value, e.g. a stripped value"""
         return self.ext.value()
 
+    def set_cursor_position(self, position):
+        """Set the cursor position"""
+        cursor = self.textCursor()
+        cursor.setPosition(position)
+        self.setTextCursor(cursor)
+
     def set_value(self, value, block=False):
         self.ext.set_value(value, block=block)
 
     def selected_line(self):
         return self.ext.selected_line()
+
+    def selected_text(self):
+        """Return the selected text"""
+        return self.ext.selected_text()
 
     def set_tabwidth(self, width):
         self.ext.set_tabwidth(width)
@@ -338,14 +555,14 @@ class TextEdit(QtWidgets.QTextEdit):
 
     def mousePressEvent(self, event):
         self.ext.mouse_press_event(event)
-        super(TextEdit, self).mousePressEvent(event)
+        super().mousePressEvent(event)
 
     def wheelEvent(self, event):
         """Disable control+wheelscroll text resizing"""
         if event.modifiers() & Qt.ControlModifier:
             event.ignore()
             return
-        super(TextEdit, self).wheelEvent(event)
+        super().wheelEvent(event)
 
     def should_expandtab(self, event):
         return event.key() == Qt.Key_Tab and self.expandtab_enabled
@@ -355,7 +572,16 @@ class TextEdit(QtWidgets.QTextEdit):
         cursor = self.textCursor()
         cursor.insertText(' ' * tabwidth)
 
+    def create_context_menu(self, event_pos):
+        """Create a custom context menu"""
+        return self.ext.create_context_menu(event_pos)
+
+    def contextMenuEvent(self, event):
+        """Custom contextMenuEvent() for building our custom context menus"""
+        self.ext.context_menu_event(event)
+
     def keyPressEvent(self, event):
+        """Override keyPressEvent to handle tab expansion"""
         expandtab = self.should_expandtab(event)
         if expandtab:
             self.expandtab()
@@ -364,6 +590,7 @@ class TextEdit(QtWidgets.QTextEdit):
             QtWidgets.QTextEdit.keyPressEvent(self, event)
 
     def keyReleaseEvent(self, event):
+        """Override keyReleaseEvent to special-case tab expansion"""
         expandtab = self.should_expandtab(event)
         if expandtab:
             event.ignore()
@@ -371,7 +598,7 @@ class TextEdit(QtWidgets.QTextEdit):
             QtWidgets.QTextEdit.keyReleaseEvent(self, event)
 
 
-class TextEditCursorPosition(object):
+class TextEditCursorPosition:
     def __init__(self, widget, ext):
         self._widget = widget
         self._ext = ext
@@ -403,62 +630,26 @@ class MonoTextEdit(PlainTextEdit):
         self.setFont(qtutils.diff_font(context))
 
 
-def get_value_hinted(widget):
-    text = get_stripped(widget)
-    hint = get(widget.hint)
-    if text == hint:
-        return ''
-    return text
-
-
 class HintWidget(QtCore.QObject):
-    """Extend a widget to provide hint messages
-
-    This primarily exists because setPlaceholderText() is only available
-    in Qt5, so this class provides consistent behavior across versions.
-
-    """
+    """Set placeholder text and apply palettes to convey errors"""
 
     def __init__(self, widget, hint):
         QtCore.QObject.__init__(self, widget)
         self._widget = widget
         self._hint = hint
         self._is_error = False
-
-        self.modern = modern = hasattr(widget, 'setPlaceholderText')
-        if modern:
-            widget.setPlaceholderText(hint)
-
-        # Palette for normal text
-        QPalette = QtGui.QPalette
-        palette = widget.palette()
-
-        hint_color = palette.color(QPalette.Disabled, QPalette.Text)
+        self._error_seen = False
+        self._default_style = ''
+        widget.setPlaceholderText(hint)
         error_bg_color = QtGui.QColor(Qt.red).darker()
         error_fg_color = QtGui.QColor(Qt.white)
-
-        hint_rgb = qtutils.rgb_css(hint_color)
         error_bg_rgb = qtutils.rgb_css(error_bg_color)
         error_fg_rgb = qtutils.rgb_css(error_fg_color)
-
-        env = dict(
-            name=widget.__class__.__name__,
-            error_fg_rgb=error_fg_rgb,
-            error_bg_rgb=error_bg_rgb,
-            hint_rgb=hint_rgb,
-        )
-
-        self._default_style = ''
-
-        self._hint_style = (
-            """
-            %(name)s {
-                color: %(hint_rgb)s;
-            }
-        """
-            % env
-        )
-
+        env = {
+            'name': widget.__class__.__name__,
+            'error_fg_rgb': error_fg_rgb,
+            'error_bg_rgb': error_bg_rgb,
+        }
         self._error_style = (
             """
             %(name)s {
@@ -469,21 +660,9 @@ class HintWidget(QtCore.QObject):
             % env
         )
 
-    def init(self):
-        """Defered initialization"""
-        if self.modern:
-            self.widget().setPlaceholderText(self.value())
-        else:
-            self.widget().installEventFilter(self)
-            self.enable(True)
-
     def widget(self):
         """Return the parent text widget"""
         return self._widget
-
-    def active(self):
-        """Return True when hint-mode is active"""
-        return self.value() == get_stripped(self._widget)
 
     def value(self):
         """Return the current hint text"""
@@ -492,110 +671,53 @@ class HintWidget(QtCore.QObject):
     def set_error(self, is_error):
         """Enable/disable error mode"""
         self._is_error = is_error
-        self.refresh()
+        self.refresh_palette()
 
     def set_value(self, hint):
         """Change the hint text"""
-        if self.modern:
-            self._hint = hint
-            self._widget.setPlaceholderText(hint)
-        else:
-            # If hint-mode is currently active, re-activate it
-            active = self.active()
-            self._hint = hint
-            if active or self.active():
-                self.enable(True)
+        self._hint = hint
+        self._widget.setPlaceholderText(hint)
 
-    def enable(self, enable):
-        """Enable/disable hint-mode"""
-        if not self.modern:
-            if enable and self._hint:
-                self._widget.set_value(self._hint, block=True)
-                self._widget.cursor_position.reset()
-            else:
-                self._widget.clear()
-        self._update_palette(enable)
-
-    def refresh(self):
-        """Update the palette to match the current mode"""
-        self._update_palette(self.active())
-
-    def _update_palette(self, hint):
-        """Update to palette for normal/error/hint mode"""
+    def refresh_palette(self):
+        """Update to palette for normal/error mode"""
         if self._is_error:
-            style = self._error_style
-        elif not self.modern and hint:
-            style = self._hint_style
+            if self._error_seen:
+                style = None
+            else:
+                style = self._error_style
+                self._error_seen = True
         else:
-            style = self._default_style
-        QtCore.QTimer.singleShot(0, lambda: self._widget.setStyleSheet(style))
-
-    def eventFilter(self, _obj, event):
-        """Enable/disable hint-mode when focus changes"""
-        etype = event.type()
-        if etype == QtCore.QEvent.FocusIn:
-            self.focus_in()
-        elif etype == QtCore.QEvent.FocusOut:
-            self.focus_out()
-        return False
-
-    def focus_in(self):
-        """Disable hint-mode when focused"""
-        widget = self.widget()
-        if self.active():
-            self.enable(False)
-        widget.cursor_position.emit()
-
-    def focus_out(self):
-        """Re-enable hint-mode when losing focus"""
-        widget = self.widget()
-        if not get(widget):
-            self.enable(True)
+            if self._error_seen:
+                self._error_seen = False
+                style = self._default_style
+            else:
+                style = None
+        if style is not None:
+            utils.catch_runtime_error(self._widget.setStyleSheet, style)
 
 
 class HintedPlainTextEdit(PlainTextEdit):
     """A hinted plain text edit"""
 
     def __init__(self, context, hint, parent=None, readonly=False):
-        PlainTextEdit.__init__(
-            self, parent=parent, get_value=get_value_hinted, readonly=readonly
-        )
+        PlainTextEdit.__init__(self, parent=parent, readonly=readonly)
         self.hint = HintWidget(self, hint)
-        self.hint.init()
+        self.context = context
         self.setFont(qtutils.diff_font(context))
         self.set_tabwidth(prefs.tabwidth(context))
         # Refresh palettes when text changes
-        # pylint: disable=no-member
-        self.textChanged.connect(self.hint.refresh)
-
-    def set_value(self, value, block=False):
-        """Set the widget text or enable hint mode when empty"""
-        if value or self.hint.modern:
-            PlainTextEdit.set_value(self, value, block=block)
-        else:
-            self.hint.enable(True)
+        self.set_mouse_zoom(context.cfg.get(prefs.MOUSE_ZOOM, default=True))
 
 
 class HintedTextEdit(TextEdit):
     """A hinted text edit"""
 
     def __init__(self, context, hint, parent=None, readonly=False):
-        TextEdit.__init__(
-            self, parent=parent, get_value=get_value_hinted, readonly=readonly
-        )
+        TextEdit.__init__(self, parent=parent, readonly=readonly)
+        self.context = context
         self.hint = HintWidget(self, hint)
-        self.hint.init()
         # Refresh palettes when text changes
-        # pylint: disable=no-member
-        self.textChanged.connect(self.hint.refresh)
         self.setFont(qtutils.diff_font(context))
-
-    def set_value(self, value, block=False):
-        """Set the widget text or enable hint mode when empty"""
-        if value or self.hint.modern:
-            TextEdit.set_value(self, value, block=block)
-        else:
-            self.hint.enable(True)
 
 
 def anchor_mode(select):
@@ -610,11 +732,11 @@ def anchor_mode(select):
 # The vim-like read-only text view
 
 
-class VimMixin(object):
+class VimMixin:
     def __init__(self, widget):
         self.widget = widget
         self.Base = widget.Base
-        # Common vim/unix-ish keyboard actions
+        # Common vim/Unix-ish keyboard actions
         self.add_navigation('End', hotkeys.GOTO_END)
         self.add_navigation('Up', hotkeys.MOVE_UP, shift=hotkeys.MOVE_UP_SHIFT)
         self.add_navigation('Down', hotkeys.MOVE_DOWN, shift=hotkeys.MOVE_DOWN_SHIFT)
@@ -627,10 +749,18 @@ class VimMixin(object):
         self.add_navigation('EndOfLine', hotkeys.END_OF_LINE)
 
         qtutils.add_action(
-            widget, 'PageUp', widget.page_up, hotkeys.SECONDARY_ACTION, hotkeys.UP
+            widget,
+            'PageUp',
+            widget.page_up,
+            hotkeys.SECONDARY_ACTION,
+            hotkeys.TEXT_UP,
         )
         qtutils.add_action(
-            widget, 'PageDown', widget.page_down, hotkeys.PRIMARY_ACTION, hotkeys.DOWN
+            widget,
+            'PageDown',
+            widget.page_down,
+            hotkeys.PRIMARY_ACTION,
+            hotkeys.TEXT_DOWN,
         )
         qtutils.add_action(
             widget,
@@ -724,12 +854,10 @@ class VimMixin(object):
         return self.Base.keyPressEvent(widget, event)
 
 
-# pylint: disable=too-many-ancestors
 class VimHintedPlainTextEdit(HintedPlainTextEdit):
     """HintedPlainTextEdit with vim hotkeys
 
     This can only be used in read-only mode.
-
     """
 
     Base = HintedPlainTextEdit
@@ -755,7 +883,6 @@ class VimHintedPlainTextEdit(HintedPlainTextEdit):
         return self._mixin.keyPressEvent(event)
 
 
-# pylint: disable=too-many-ancestors
 class VimTextEdit(MonoTextEdit):
     """Text viewer with vim-like hotkeys
 
@@ -790,20 +917,17 @@ class HintedDefaultLineEdit(LineEdit):
     """A line edit with hint text"""
 
     def __init__(self, hint, tooltip=None, parent=None):
-        LineEdit.__init__(self, parent=parent, get_value=get_value_hinted)
+        LineEdit.__init__(self, parent=parent)
         if tooltip:
             self.setToolTip(tooltip)
         self.hint = HintWidget(self, hint)
-        self.hint.init()
-        # pylint: disable=no-member
-        self.textChanged.connect(lambda text: self.hint.refresh())
 
 
 class HintedLineEdit(HintedDefaultLineEdit):
     """A monospace line edit with hint text"""
 
     def __init__(self, context, hint, tooltip=None, parent=None):
-        super(HintedLineEdit, self).__init__(hint, tooltip=tooltip, parent=parent)
+        super().__init__(hint, tooltip=tooltip, parent=parent)
         self.setFont(qtutils.diff_font(context))
 
 
@@ -843,7 +967,7 @@ class VimTextBrowser(VimTextEdit):
         self.numbers = LineNumbers(self)
 
     def resizeEvent(self, event):
-        super(VimTextBrowser, self).resizeEvent(event)
+        super().resizeEvent(event)
         self.numbers.refresh_size()
 
 
@@ -894,7 +1018,8 @@ class LineNumbers(TextDecorator):
     def width_hint(self):
         document = self.editor.document()
         digits = int(math.log(max(1, document.blockCount()), 10)) + 2
-        return defs.large_margin + self.fontMetrics().width('0') * digits
+        text_width = qtutils.text_width(self.font(), '0')
+        return defs.large_margin + (text_width * digits)
 
     def set_highlighted(self, line_number):
         """Set the line to highlight"""
@@ -902,11 +1027,10 @@ class LineNumbers(TextDecorator):
 
     def paintEvent(self, event):
         """Paint the line number"""
-        QPalette = QtGui.QPalette
         painter = QtGui.QPainter(self)
         editor = self.editor
         palette = editor.palette()
-
+        QPalette = QtGui.QPalette
         painter.fillRect(event.rect(), palette.color(QPalette.Base))
 
         content_offset = editor.contentOffset()
@@ -941,4 +1065,194 @@ class LineNumbers(TextDecorator):
                 Qt.AlignRight | Qt.AlignVCenter,
                 number,
             )
-            block = block.next()  # pylint: disable=next-method-called
+            block = block.next()
+
+
+def label_selection_timer(widget):
+    """Create a timer for handling the copy-on-click action"""
+    timer = QtCore.QTimer(widget)
+    timer.setInterval(200)
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda widget=widget: widget.setSelection(0, 0))
+    return timer
+
+
+class TextLabel(QtWidgets.QLabel):
+    """A text label that elides its display"""
+
+    def __init__(
+        self,
+        parent=None,
+        copy_on_click=False,
+        open_external_links=True,
+        selectable=True,
+        text_format=Qt.PlainText,
+    ):
+        QtWidgets.QLabel.__init__(self, parent)
+        self._copy_on_click = copy_on_click
+        self._display = ''  # The final displayed text.
+        self._template = ''  # The plaintext version of the richtext html template.
+        self._text = ''  # The text value or the rich text html.
+        self._text_format = text_format  # The QTextFormat usef for this label.
+        self._elide = False
+        self._metrics = QtGui.QFontMetrics(self.font())
+
+        self.setTextFormat(text_format)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.setFocusPolicy(Qt.NoFocus)
+        size_policy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Minimum
+        )
+        self.setSizePolicy(size_policy)
+        if selectable:
+            interaction_flags = Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        else:
+            interaction_flags = Qt.LinksAccessibleByMouse
+        self.setTextInteractionFlags(interaction_flags)
+        self.setOpenExternalLinks(open_external_links)
+        self.copy_all_action = qtutils.add_action_with_icon(
+            self,
+            icons.copy(),
+            N_('Copy All'),
+            self.copy_all,
+        )
+        self.copy_selection_action = qtutils.add_action_with_icon(
+            self,
+            icons.copy(),
+            N_('Copy Selection'),
+            self.copy_selection,
+        )
+        self.select_all_action = qtutils.add_action(
+            self, N_('Select All'), self.select_all
+        )
+        self.timer = label_selection_timer(self)
+        self.customContextMenuRequested.connect(self._context_menu)
+
+    def copy_all_callback(self):
+        """Specialized by subclasses to customize the copy-on-click behavior"""
+        self.copy_all()
+
+    def copy_all(self):
+        """Copy the text label to the clipboard"""
+        qtutils.set_clipboard(self._template)
+        self.start_selection_timer()
+
+    def copy_selection(self):
+        """Handle elided text when copying to the clipboard"""
+        text = self.selectedText()
+        if text == self._display and self._display != self._text:
+            text = self._text
+        qtutils.set_clipboard(text)
+
+    def select_all(self):
+        """Select the entire text label"""
+        if self.textFormat() == Qt.RichText:
+            self.setSelection(0, min(len(self._display), len(self._template)))
+        else:
+            self.setSelection(0, len(self._display))
+
+    def elide(self):
+        self._elide = True
+        return self
+
+    def align_bottom(self):
+        self.setAlignment(Qt.AlignBottom)
+        return self
+
+    def align_top(self):
+        self.setAlignment(Qt.AlignTop)
+        return self
+
+    def set_font(self, font):
+        self.setFont(font)
+        return self
+
+    def set_text(self, text):
+        self.set_template(text, text)
+
+    def set_template(self, text, template):
+        self._display = text
+        self._text = text
+        self._template = template
+        self._saved_selection = None
+        self.update_text(self.width())
+        self.setText(self._display)
+
+    def update_text(self, width):
+        self._display = self._text
+        if not self._elide:
+            return
+        text = self._metrics.elidedText(self._template, Qt.ElideRight, width - 2)
+        if text == self._template:
+            self.setTextFormat(self._text_format)
+        else:
+            self._display = text
+            self.setTextFormat(Qt.PlainText)
+
+    def get(self):
+        """Return the label's inner text value"""
+        return self._text
+
+    def start_selection_timer(self):
+        """Start the copy-on-click text selection timer"""
+        if not self.selectedText() and not self.timer.isActive():
+            self.select_all()
+            self.timer.start()
+
+    # Qt overrides
+    def setFont(self, font):
+        self._metrics = QtGui.QFontMetrics(font)
+        QtWidgets.QLabel.setFont(self, font)
+
+    def resizeEvent(self, event):
+        if self._elide:
+            self.update_text(event.size().width())
+            with qtutils.BlockSignals(self):
+                self.setText(self._display)
+        QtWidgets.QLabel.resizeEvent(self, event)
+
+    def context_menu_actions(self, menu):
+        """Add context menu actions to a QMenu or widget"""
+        self.copy_selection_action.setEnabled(bool(self.selectedText()))
+        menu.addAction(self.copy_all_action)
+        menu.addAction(self.copy_selection_action)
+        menu.addSeparator()
+        menu.addAction(self.select_all_action)
+
+    def _context_menu(self, pos):
+        """Display the custom context menu"""
+        menu = qtutils.create_menu(N_('Actions'), self)
+        self.context_menu_actions(menu)
+        menu.exec_(self.mapToGlobal(pos))
+
+    def mousePressEvent(self, event):
+        self._saved_selection = self.selectedText()
+        super().mouseReleaseEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Copy the text label when clicked"""
+        """Copy text when clicked"""
+        # This makes it impossible to select text by clicking and dragging while still
+        # allowing copy-on-click to be a one-click affair.
+        if (
+            self._copy_on_click
+            and event.button() == Qt.LeftButton
+            and not self.selectedText()
+            and not self._saved_selection
+        ):
+            self.copy_all_callback()
+        return super().mouseReleaseEvent(event)
+
+
+class PlainTextLabel(TextLabel):
+    """A plaintext label that elides its display"""
+
+    def __init__(self, copy_on_click=True, selectable=True, parent=None):
+        super().__init__(
+            copy_on_click=copy_on_click,
+            selectable=selectable,
+            parent=parent,
+            open_external_links=False,
+            text_format=Qt.PlainText,
+        )

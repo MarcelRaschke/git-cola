@@ -1,21 +1,20 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import os
 import shutil
 import stat
 import tempfile
+from unittest.mock import Mock, patch
 
 import pytest
-
-try:
-    from unittest.mock import Mock, patch  # noqa pylint: disable=unused-import
-except ImportError:
-    from mock import Mock, patch  # noqa pylint: disable=unused-import
 
 from cola import core
 from cola import git
 from cola import gitcfg
 from cola import gitcmds
 from cola.models import main
+
+
+# prevent unused imports lint errors.
+assert patch is not None
 
 
 def tmp_path(*paths):
@@ -33,7 +32,7 @@ def fixture(*paths):
 # handler, adapted from <http://stackoverflow.com/a/1889686/357338>, works
 # around this by changing such files to be writable and then re-trying.
 def remove_readonly(func, path, _exc_info):
-    if func is os.remove and not os.access(path, os.W_OK):
+    if func is os.unlink and not os.access(path, os.W_OK):
         os.chmod(path, stat.S_IWRITE)
         func(path)
     else:
@@ -43,18 +42,18 @@ def remove_readonly(func, path, _exc_info):
 def touch(*paths):
     """Open and close a file to either create it or update its mtime"""
     for path in paths:
-        open(path, 'a').close()
+        core.open_append(path).close()
 
 
 def write_file(path, content):
     """Write content to the specified file path"""
-    with open(path, 'w') as f:
+    with core.open_write(path) as f:
         f.write(content)
 
 
 def append_file(path, content):
     """Open a file in append mode and write content to it"""
-    with open(path, 'a') as f:
+    with core.open_append(path) as f:
         f.write(content)
 
 

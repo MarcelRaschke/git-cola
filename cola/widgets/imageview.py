@@ -1,4 +1,4 @@
-# Copyright (c) 2018 David Aguilar <davvid@gmail.com>
+# Copyright (c) 2018-2024 David Aguilar <davvid@gmail.com>
 #
 # Git Cola is GPL licensed, but this file has a more permissive license.
 # This file is dual-licensed Git Cola GPL + pyqimageview MIT.
@@ -26,7 +26,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-from __future__ import absolute_import, division, print_function, unicode_literals
 import argparse
 import os
 import sys
@@ -57,7 +56,7 @@ class ImageView(QtWidgets.QGraphicsView):
     image_changed = Signal()
 
     def __init__(self, parent=None):
-        super(ImageView, self).__init__(parent)
+        super().__init__(parent)
 
         scene = QtWidgets.QGraphicsScene(self)
         self.graphics_pixmap = QtWidgets.QGraphicsPixmapItem()
@@ -180,7 +179,7 @@ class ImageView(QtWidgets.QGraphicsView):
         )
 
     def resizeEvent(self, event):
-        super(ImageView, self).resizeEvent(event)
+        super().resizeEvent(event)
         self.update_scene_rect()
         event.accept()
         self.fitInView(self.last_scene_roi, Qt.KeepAspectRatio)
@@ -249,7 +248,7 @@ class ImageView(QtWidgets.QGraphicsView):
         return self.last_scene_roi
 
     def mousePressEvent(self, event):
-        super(ImageView, self).mousePressEvent(event)
+        super().mousePressEvent(event)
         button = event.button()
         modifier = event.modifiers()
 
@@ -269,7 +268,7 @@ class ImageView(QtWidgets.QGraphicsView):
             self.rubberband.show()
 
     def mouseMoveEvent(self, event):
-        super(ImageView, self).mouseMoveEvent(event)
+        super().mouseMoveEvent(event)
         # update selection display
         if self.rubberband is not None:
             self.rubberband.setGeometry(
@@ -302,7 +301,7 @@ class ImageView(QtWidgets.QGraphicsView):
         self.update()
 
     def mouseReleaseEvent(self, event):
-        super(ImageView, self).mouseReleaseEvent(event)
+        super().mouseReleaseEvent(event)
         # consume rubber band selection
         if self.rubberband is not None:
             self.rubberband.hide()
@@ -432,7 +431,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
-        global main_loop_type  # pylint: disable=global-statement
+        global main_loop_type
         if key == Qt.Key_Escape:
             if main_loop_type == 'qt':
                 QtWidgets.QApplication.quit()
@@ -442,7 +441,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 # IPython.get_ipython().ask_exit()
 
 
-# pylint: disable=unused-argument
 def sigint_handler(*args):
     """Handler for the SIGINT signal."""
     sys.stderr.write('\r')
@@ -460,7 +458,7 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     try:
-        import signal  # pylint: disable=all
+        import signal
 
         signal.signal(signal.SIGINT, sigint_handler)
     except ImportError:

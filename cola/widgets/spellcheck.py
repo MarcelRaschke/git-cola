@@ -1,14 +1,9 @@
-from __future__ import absolute_import, division, print_function, unicode_literals
 import re
 
+from qtpy import QtCore
+from qtpy import QtGui
+from qtpy import QtWidgets
 from qtpy.QtCore import Qt
-from qtpy.QtCore import QEvent
-from qtpy.QtCore import Signal
-from qtpy.QtGui import QMouseEvent
-from qtpy.QtGui import QSyntaxHighlighter
-from qtpy.QtGui import QTextCharFormat
-from qtpy.QtGui import QTextCursor
-from qtpy.QtWidgets import QAction
 
 from .. import qtutils
 from .. import spellcheck
@@ -16,38 +11,33 @@ from ..i18n import N_
 from .text import HintedTextEdit
 
 
-# pylint: disable=too-many-ancestors
 class SpellCheckTextEdit(HintedTextEdit):
-    def __init__(self, context, hint, parent=None):
+    def __init__(self, context, hint, check=None, parent=None):
         HintedTextEdit.__init__(self, context, hint, parent)
 
         # Default dictionary based on the current locale.
-        self.spellcheck = spellcheck.NorvigSpellCheck()
+        self.spellcheck = check or spellcheck.NorvigSpellCheck()
         self.highlighter = Highlighter(self.document(), self.spellcheck)
-
-    def set_dictionary(self, dictionary):
-        self.spellcheck.set_dictionary(dictionary)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             # Rewrite the mouse event to a left button event so the cursor is
             # moved to the location of the pointer.
-            event = QMouseEvent(
-                QEvent.MouseButtonPress,
-                event.pos(),
+            if hasattr(event, 'position'):  # Qt6
+                position = event.position()
+            else:
+                position = event.pos()
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseButtonPress,
+                position,
                 Qt.LeftButton,
                 Qt.LeftButton,
                 Qt.NoModifier,
             )
         HintedTextEdit.mousePressEvent(self, event)
 
-    def context_menu(self):
-        popup_menu = HintedTextEdit.createStandardContextMenu(self)
-
-        # Select the word under the cursor.
-        cursor = self.textCursor()
-        cursor.select(QTextCursor.WordUnderCursor)
-        self.setTextCursor(cursor)
+    def create_context_menu(self, event_pos):
+        popup_menu = super().create_context_menu(event_pos)
 
         # Check if the selected word is misspelled and offer spelling
         # suggestions if it is.
@@ -67,11 +57,15 @@ class SpellCheckTextEdit(HintedTextEdit):
                     popup_menu.addSeparator()
                     popup_menu.addMenu(spell_menu)
 
-        return popup_menu, spell_menu
+        return popup_menu
 
     def contextMenuEvent(self, event):
-        popup_menu, _ = self.context_menu()
-        popup_menu.exec_(self.mapToGlobal(event.pos()))
+        """Select the current word and then show a context menu"""
+        # Select the word under the cursor before calling the default contextMenuEvent.
+        cursor = self.textCursor()
+        cursor.select(QtGui.QTextCursor.WordUnderCursor)
+        self.setTextCursor(cursor)
+        super().contextMenuEvent(event)
 
     def correct(self, word):
         """Replaces the selected text with word."""
@@ -84,12 +78,134 @@ class SpellCheckTextEdit(HintedTextEdit):
         cursor.endEditBlock()
 
 
-class Highlighter(QSyntaxHighlighter):
+class SpellCheckLineEdit(SpellCheckTextEdit):
+    """A fake QLineEdit that provides spellcheck capabilities
 
+    This class emulates QLineEdit using our QPlainTextEdit base class
+    so that we can leverage the existing spellcheck feature.
+
+    """
+
+    down_pressed = QtCore.Signal()
+
+    # This widget is a single-line QTextEdit as described in
+    # http://blog.ssokolow.com/archives/2022/07/22/a-qlineedit-replacement-with-spell-checking/
+    def __init__(self, context, hint, check=None, parent=None):
+        super().__init__(context, hint, check=check, parent=parent)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setWordWrapMode(QtGui.QTextOption.NoWrap)
+        self.setTabChangesFocus(True)
+        self.textChanged.connect(self._trim_changed_text_lines)
+
+    def focusInEvent(self, event):
+        """Select text when entering with a tab to mimic QLineEdit"""
+        super().focusInEvent(event)
+
+        if event.reason() in (
+            Qt.BacktabFocusReason,
+            Qt.ShortcutFocusReason,
+            Qt.TabFocusReason,
+        ):
+            self.selectAll()
+
+    def focusOutEvent(self, event):
+        """De-select text when exiting with tab to mimic QLineEdit"""
+        super().focusOutEvent(event)
+
+        if event.reason() in (
+            Qt.BacktabFocusReason,
+            Qt.MouseFocusReason,
+            Qt.ShortcutFocusReason,
+            Qt.TabFocusReason,
+        ):
+            cur = self.textCursor()
+            cur.movePosition(QtGui.QTextCursor.End)
+            self.setTextCursor(cur)
+
+    def keyPressEvent(self, event):
+        """Handle the up/down arrow keys"""
+        event_key = event.key()
+        if event_key == Qt.Key_Up:
+            cursor = self.textCursor()
+            if cursor.position() == 0:
+                cursor.clearSelection()
+            else:
+                if event.modifiers() & Qt.ShiftModifier:
+                    mode = QtGui.QTextCursor.KeepAnchor
+                else:
+                    mode = QtGui.QTextCursor.MoveAnchor
+                cursor.setPosition(0, mode)
+            self.setTextCursor(cursor)
+            return
+
+        if event_key == Qt.Key_Down:
+            cursor = self.textCursor()
+            cur_position = cursor.position()
+            end_position = len(self.value())
+            if cur_position == end_position:
+                cursor.clearSelection()
+                self.setTextCursor(cursor)
+                self.down_pressed.emit()
+            else:
+                if event.modifiers() & Qt.ShiftModifier:
+                    mode = QtGui.QTextCursor.KeepAnchor
+                else:
+                    mode = QtGui.QTextCursor.MoveAnchor
+                cursor.setPosition(end_position, mode)
+                self.setTextCursor(cursor)
+            return
+        super().keyPressEvent(event)
+
+    def minimumSizeHint(self):
+        """Match QLineEdit's size behavior"""
+        width = super().minimumSizeHint().width()
+        height = self._get_preferred_height()
+        style_opts = QtWidgets.QStyleOptionFrame()
+        style_opts.initFrom(self)
+        style_opts.lineWidth = self.frameWidth()
+
+        return self.style().sizeFromContents(
+            QtWidgets.QStyle.CT_LineEdit, style_opts, QtCore.QSize(width, height), self
+        )
+
+    def sizeHint(self):
+        """Use the minimum size as the sizeHint()"""
+        return self.minimumSizeHint()
+
+    def setFont(self, font):
+        """Set the current font"""
+        self.setMinimumHeight(self._get_preferred_height(font=font))
+        super().setFont(font)
+
+    def _get_preferred_height(self, font=None):
+        """Calculate the preferred height for this widget"""
+        if font is None:
+            font = self.font()
+        block_fmt = self.document().firstBlock().blockFormat()
+        height = int(
+            QtGui.QFontMetricsF(font).lineSpacing()
+            + block_fmt.topMargin()
+            + block_fmt.bottomMargin()
+            + 2 * self.document().documentMargin()
+            + 2 * self.frameWidth()
+        )
+        return height
+
+    def _trim_changed_text_lines(self):
+        """Trim the document to a single line to enforce a maximum of one line"""
+        # self.setMaximumBlockCount(1) Undo/Redo.
+        if self.document().blockCount() > 1:
+            self.document().setPlainText(self.document().firstBlock().text())
+
+
+class Highlighter(QtGui.QSyntaxHighlighter):
     WORDS = r"(?iu)[\w']+"
 
     def __init__(self, doc, spellcheck_widget):
-        QSyntaxHighlighter.__init__(self, doc)
+        QtGui.QSyntaxHighlighter.__init__(self, doc)
         self.spellcheck = spellcheck_widget
         self.enabled = False
 
@@ -100,9 +216,9 @@ class Highlighter(QSyntaxHighlighter):
     def highlightBlock(self, text):
         if not self.enabled:
             return
-        fmt = QTextCharFormat()
+        fmt = QtGui.QTextCharFormat()
         fmt.setUnderlineColor(Qt.red)
-        fmt.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
+        fmt.setUnderlineStyle(QtGui.QTextCharFormat.SpellCheckUnderline)
 
         for word_object in re.finditer(self.WORDS, text):
             if not self.spellcheck.check(word_object.group()):
@@ -111,14 +227,13 @@ class Highlighter(QSyntaxHighlighter):
                 )
 
 
-class SpellAction(QAction):
+class SpellAction(QtWidgets.QAction):
     """QAction that returns the text in a signal."""
 
-    result = Signal(object)
+    result = QtCore.Signal(object)
 
     def __init__(self, *args):
-        QAction.__init__(self, *args)
-        # pylint: disable=no-member
+        QtWidgets.QAction.__init__(self, *args)
         self.triggered.connect(self.correct)
 
     def correct(self):
